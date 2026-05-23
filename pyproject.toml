@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "Conversation-driven AI-видеомонтажёр для рилз/shorts/TikTok/YouTube. Форк browser-use/video-use, локализованный + TeleTranscribe MCP + B-roll генерация через MCP."
 license = { file = "LICENSE" }
 requires-python = ">=3.10,<3.13"
+
+# Default-зависимости — lean stack без PyTorch / sentence-transformers.
+# Для audio-first режима теперь используется TT describe-image (multimodal LLM
+# через MCP), что снимает 2.5 ГБ зависимостей с базовой установки.
+# По рекомендации Gemini Deep Research (research_stack_for_my_machine.md).
 dependencies = [
     # HTTP-клиент для прямых вызовов TeleTranscribe HTTP API (когда MCP недоступен)
     "httpx>=0.27",
@@ -11,18 +16,15 @@ dependencies = [
     # Анализ аудио для timeline-view (waveform PNG)
     "librosa>=0.10",
     "matplotlib>=3.7",
-    # Базовые изображения (filmstrip composer, PIL-overlays)
+    # Базовые изображения (filmstrip composer, PIL-overlays, кадры для TT describe)
     "pillow>=10.0",
     "numpy>=1.24",
     # EDL формат (lossless interchange, экспорт в FCPXML / Resolve / AAF)
     "OpenTimelineIO>=0.17",
-    # Scene-detection для мульти-клипа и audio-first match.
-    # opencv-python-headless: headless вариант шире поддерживает старые macOS.
-    # Версию pin'аем под macOS 12 Intel (свежий 4.13 дропнул эти wheels).
+    # Scene-detection. opencv-python-headless: -200 МБ Qt-зависимостей,
+    # быстрее импорт, чище окружение (по Gemini).
     "scenedetect>=0.6",
-    "opencv-python-headless<4.10",
-    # CLIP-эмбеддинги для семантического матча phrase ↔ shot (audio-first mode)
-    "sentence-transformers>=3.0",
+    "opencv-python-headless<4.11",
     # FFmpeg как python wrapper (опционально, для filter-graph DSL)
     "ffmpeg-python>=0.2",
 ]
@@ -30,8 +32,27 @@ dependencies = [
 [project.optional-dependencies]
 # Manim — для математических/диаграмм оверлеев. Тяжёлая зависимость, ставим по запросу.
 animations = ["manim>=0.18"]
+
 # Адаптеры OTIO для экспорта в FCPXML/EDL/AAF/DaVinci. Тоже опционально.
 otio-export = ["OpenTimelineIO-Plugins"]
+
+# CLIP через PyTorch — fallback для audio-first match если TT describe-image
+# недоступен или даёт слишком неточные результаты. Тащит +2.5 ГБ зависимостей.
+# Ставится по запросу: `uv sync --extra clip-pytorch`
+clip-pytorch = [
+    "sentence-transformers>=3.0,<3.5",
+    "torch>=2.0,<2.3",
+    "torchvision<0.18",
+    "transformers<4.45",
+]
+
+# ONNX-CLIP — lean-альтернатива clip-pytorch для тех кто хочет on-device без
+# жирного PyTorch. Требует ручной конвертации CLIP-ViT-B-32 в .onnx (см. helpers/clip_onnx.py).
+# 15 МБ вместо 2 ГБ, +20-40% к скорости на CPU (по Gemini).
+clip-onnx = [
+    "onnxruntime>=1.18",
+    "tokenizers>=0.20",
+]
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -40,25 +61,22 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = []
 
-# scenedetect транзитивно тащит opencv-python 4.13+, у которого нет
-# wheel для macOS 12 Intel. Override на последнюю версию с поддержкой.
-# Действует только в этом проекте — другие venv'ы не задеты.
-[tool.uv]
 # Pin для macOS 12 Intel + Python 3.12 — где новые версии этих пакетов
 # дропнули pre-built wheels. Override действует только в этом проекте.
+[tool.uv]
 override-dependencies = [
-    # OpenCV: новые 4.13+ нет wheel для macOS 12 Intel.
-    "opencv-python<4.10",
-    # PyTorch для Intel mac заморожен на 2.2.x — новее только для arm64/Linux/Win.
-    "torch<2.3",
-    "torchvision<0.18",
-    # transformers 5.x требует PyTorch>=2.4 — несовместимо с нашим 2.2.2.
-    # sentence-transformers 4+ тянет новый transformers. Pin'аем старую ветку.
-    "transformers<4.45",
-    "sentence-transformers<3.5",
     # llvmlite/numba/librosa: новые версии требуют сборки llvmlite из исходников
     # (нужен системный LLVM). Старые версии имеют готовые wheels.
     "librosa<0.11",
     "numba<0.60",
     "llvmlite<0.43",
+    # Если ставится clip-pytorch extra — pin'аем под macOS 12 Intel.
+    # PyTorch для Intel mac заморожен на 2.2.x; transformers 5.x требует torch>=2.4.
+    "torch<2.3",
+    "torchvision<0.18",
+    "transformers<4.45",
+    "sentence-transformers<3.5",
+    # opencv-python (транзитивно через scenedetect 0.7) — 4.13+ нет wheel для mac 12.
+    # Pin даже если используем headless: scenedetect import иногда трогает базовый.
+    "opencv-python<4.11",
 ]

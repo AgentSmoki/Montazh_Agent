@@ -188,12 +188,20 @@ def extract_segment(
     fade_out_start = max(0.0, duration - 0.03)
     af = f"afade=t=in:st=0:d=0.03,afade=t=out:st={fade_out_start:.3f}:d=0.03"
 
+    # Кодек: draft → VideoToolbox (3-5× быстрее libx264 на Intel macOS),
+    # preview/final → libx264 (мягче на субтитрах и лицах, особенно на старых
+    # Intel CPU, где QSV даёт мыло на низких битрейтах).
+    # Источник: Gemini Deep Research stack-исследование, май 2026.
     if draft:
-        preset, crf = "ultrafast", "28"
+        codec_args = [
+            "-c:v", "h264_videotoolbox",
+            "-b:v", "10M",   # на Intel constant-quality не работает, используем CBR
+            "-allow_sw", "1",  # fallback на soft если hw недоступен
+        ]
     elif preview:
-        preset, crf = "medium", "22"
+        codec_args = ["-c:v", "libx264", "-preset", "medium", "-crf", "22"]
     else:
-        preset, crf = "fast", "20"
+        codec_args = ["-c:v", "libx264", "-preset", "fast", "-crf", "20"]
 
     cmd = [
         "ffmpeg", "-y",
@@ -202,7 +210,7 @@ def extract_segment(
         "-t", f"{duration:.3f}",
         "-vf", vf,
         "-af", af,
-        "-c:v", "libx264", "-preset", preset, "-crf", crf,
+        *codec_args,
         "-pix_fmt", "yuv420p", "-r", "24",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",

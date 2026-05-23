@@ -49,6 +49,25 @@ command -v yt-dlp >/dev/null || brew install yt-dlp    # опц., для ска�
 command -v ffprobe >/dev/null && ffprobe -version | head -1
 ```
 
+**⚠️ macOS 12 Monterey + Intel — заморозь Homebrew от обновлений.**
+Homebrew официально поддерживает только 3 последние мажорные macOS. macOS 12
+выпала из окна — скоро brew перестанет отдавать прекомпилированные bottles для
+FFmpeg/Node.js, и при `brew update && brew upgrade` начнёт собирать из исходников
+(часы CPU + 100% вентилятор). По рекомендации Gemini Deep Research:
+
+```bash
+# Добавь в ~/.zshrc (или ~/.bashrc) и перезапусти shell
+echo 'export HOMEBREW_NO_AUTO_UPDATE=1' >> ~/.zshrc
+echo 'export HOMEBREW_NO_INSTALL_UPGRADE=1' >> ~/.zshrc
+
+# Проверка: автоапдейт выключен
+echo $HOMEBREW_NO_AUTO_UPDATE   # должно вывести "1"
+```
+
+После этого `brew install X` не будет триггерить полное обновление дерева.
+Обновления делаешь вручную через `brew update && brew upgrade <конкретный_пакет>`,
+только когда сам это решишь.
+
 ### 4. Node.js (опц., для Remotion / HyperFrames)
 
 ```bash
