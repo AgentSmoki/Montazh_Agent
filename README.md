@@ -1,110 +1,110 @@
-<p align="center">
-  <img src="static/video-use-banner.png" alt="video-use" width="100%">
-</p>
+# Montazh_Agent — AI-видеомонтажёр через Claude Code
 
-# video-use
+Форк [browser-use/video-use](https://github.com/browser-use/video-use), локализованный на русский и адаптированный под мой стек:
+- **Транскрипция** через мой собственный [TeleTranscribe MCP](../TeleTranscribe/) (GigaAM, диаризация, word-timestamps), а не ElevenLabs Scribe.
+- **B-roll генерация** через Higgsfield/Fal.ai MCP (Veo 3.1 / Kling 3.0 / Hailuo / Nano Banana Pro).
+- **Multi-source режимы:** нарезка из 2-10 разных рилз в один финал, audio-first (голос + видео под него), format-mix (1 source → N форматов вывода).
+- **Полный overlay-стек** уже в MVP: Manim, Remotion, HyperFrames, PIL.
+- **OTIO export** для дальнейшей работы в DaVinci Resolve / Final Cut Pro.
 
-Introducing **video-use** — edit videos with Claude Code. 100% open source.
-
-Drop raw footage in a folder, chat with Claude Code, get `final.mp4` back. Works for any content — talking heads, montages, tutorials, travel, interviews — without presets or menus.
-
-## What it does
-
-- **Cuts out filler words** (`umm`, `uh`, false starts) and dead space between takes
-- **Auto color grades** every segment (warm cinematic, neutral punch, or any custom ffmpeg chain)
-- **30ms audio fades** at every cut so you never hear a pop
-- **Burns subtitles** in your style — 2-word UPPERCASE chunks by default, fully customizable
-- **Generates animation overlays** via [HyperFrames](https://github.com/heygen-com/hyperframes), [Remotion](https://www.remotion.dev/), [Manim](https://www.manim.community/), or PIL — spawned in parallel sub-agents, one per animation
-- **Self-evaluates the rendered output** at every cut boundary before showing you anything
-- **Persists session memory** in `project.md` so next week's session picks up where you left off
-
-## Setup prompt
-
-Paste into Claude Code, Codex, Hermes, Openclaw, or any agent with shell access:
-
-```text
-Set up https://github.com/browser-use/video-use for me.
-
-Read install.md first to install this repo, wire up ffmpeg, register the skill with whichever agent you're running under, and set up the ElevenLabs API key — ask me to paste it when you need it. Then read SKILL.md for daily usage, and always read helpers/ because that's where the editing scripts live. After install, don't transcribe anything on your own — just tell me it's ready and wait for me to drop footage into a folder.
-```
-
-The agent handles the clone, dependencies, skill registration, and prompts you once for your ElevenLabs API key (grab one at [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys)).
-
-Then point your agent at a folder of raw takes:
+## Quick start
 
 ```bash
-cd /path/to/your/videos
-claude    # or codex, hermes, etc.
-```
-
-For always-on editing from your own VPS or Telegram, run the agent through [Browser Use Box](https://browser-use.com/bux). [Watch the 15-second demo](https://www.tiktok.com/@browser_use/video/7639824093721758989).
-
-And in the session:
-
-> edit these into a launch video
-
-It inventories the sources, proposes a strategy, waits for your OK, then produces `edit/final.mp4` next to your sources. All outputs live in `<videos_dir>/edit/` — the skill directory stays clean.
-
-## Manual install
-
-If you'd rather do it by hand:
-
-```bash
-# 1. Clone and symlink into your agent's skills directory
-git clone https://github.com/browser-use/video-use ~/Developer/video-use
-ln -sfn ~/Developer/video-use ~/.claude/skills/video-use        # Claude Code
-# ln -sfn ~/Developer/video-use ~/.codex/skills/video-use       # Codex
-
-# 2. Install deps
-cd ~/Developer/video-use
-uv sync                         # or: pip install -e .
-brew install ffmpeg             # required
-brew install yt-dlp             # optional, for downloading online sources
-
-# 3. Add your ElevenLabs API key
+# 1. Установи зависимости (один раз)
+cd /Users/admin/Documents/Razarabotka/Montazh_Agent
+uv sync
+brew install ffmpeg yt-dlp
 cp .env.example .env
-$EDITOR .env                    # ELEVENLABS_API_KEY=...
+# отредактируй .env: впиши TT_API_KEY (обязательно)
+
+# 2. Зарегистрируй MCP-серверы (один раз)
+# TeleTranscribe — обязательно
+claude mcp add teletranscribe \
+  python3 /Users/admin/Documents/Razarabotka/TeleTranscribe/services/telegram-bot/mcp_server.py \
+  -e TT_API_BASE_URL=http://localhost:8000 \
+  -e TT_API_KEY=$(grep TT_API_KEY .env | cut -d= -f2)
+
+# Higgsfield — для B-roll генерации (опц.)
+claude mcp add --transport http --scope user higgsfield https://mcp.higgsfield.ai/mcp
+
+# 3. Зарегистрируй skill в Claude Code
+ln -sfn /Users/admin/Documents/Razarabotka/Montazh_Agent ~/.claude/skills/montazh-agent
+
+# 4. Используй из любой папки с видео
+cd ~/my_reels_project   # тут лежат clip1.mp4, clip2.mp4, voice.m4a и scenario.md
+claude
+# > смонтируй один рилз из этих трёх клипов по scenario.md
 ```
 
-## How it works
+## Поддерживаемые сценарии
 
-The LLM never watches the video. It **reads** it — through two layers that together give it everything it needs to cut with word-boundary precision.
+| Что у тебя | Что хочешь | Режим |
+|---|---|---|
+| 1 длинное видео (30 мин talking head) | нарезать highlights под сценарий | **highlight** |
+| 2-10 коротких рилз | собрать один финальный с субтитрами | **multi-clip** |
+| голосовое аудио + N видеосъёмок | голос как timeline, видео подбирается под фразы | **audio-first** |
+| любые видео | 3 разных формата (рилз/квадрат/YT) сразу | **format-mix** |
+| только сценарий, видео нет | целиком сгенерировать через MCP | **generative-only** |
 
-<p align="center">
-  <img src="static/timeline-view.svg" alt="timeline_view composite — filmstrip + speaker track + waveform + word labels + silence-gap cut candidates" width="100%">
-</p>
+Агент сам определит режим по `inventory.py` и предложит 2-3 варианта формата вывода.
 
-**Layer 1 — Audio transcript (always loaded).** One ElevenLabs Scribe call per source gives word-level timestamps, speaker diarization, and audio events (`(laughter)`, `(applause)`, `(sigh)`). All takes pack into a single ~12KB `takes_packed.md` — the LLM's primary reading view.
+## Архитектура
 
-```
-## C0103  (duration: 43.0s, 8 phrases)
-  [002.52-005.36] S0 Ninety percent of what a web agent does is completely wasted.
-  [006.08-006.74] S0 We fixed this.
-```
+См. [SKILL.md](SKILL.md) — полный системный промпт агента (17 hard rules, mode dispatch, pipeline'ы для каждого режима, anti-patterns).
 
-**Layer 2 — Visual composite (on demand).** `timeline_view` produces a filmstrip + waveform + word labels PNG for any time range. Called only at decision points — ambiguous pauses, retake comparisons, cut-point sanity checks.
+См. [CLAUDE.md](CLAUDE.md) — контекст для Claude Code: какие skills/MCP подключены, конвенции, запреты.
 
-> Naive approach: 30,000 frames × 1,500 tokens = **45M tokens of noise**.
-> Video Use: **12KB text + a handful of PNGs**.
-
-Same idea as browser-use giving an LLM a structured DOM instead of a screenshot — but for video.
-
-## Pipeline
+## Структура папок
 
 ```
-Transcribe ──> Pack ──> LLM Reasons ──> EDL ──> Render ──> Self-Eval
-                                                              │
-                                                              └─ issue? fix + re-render (max 3)
+Montazh_Agent/
+├── SKILL.md, CLAUDE.md, AGENTS.md
+├── helpers/                       # CLI-скрипты
+│   ├── transcribe_mcp.py          # TT MCP → Scribe-format JSON
+│   ├── inventory.py               # ffprobe всех источников
+│   ├── format_recommender.py      # подсказки по формату вывода
+│   ├── scene_detect.py            # PySceneDetect
+│   ├── match_video_to_audio.py    # CLIP-матчинг (audio-first)
+│   ├── broll_generator.py         # инструкции для MCP B-roll
+│   ├── otio_export.py             # → .otio / .fcpxml
+│   ├── pack_transcripts.py        # JSON → packed.md (upstream)
+│   ├── timeline_view.py           # PNG drill-down (upstream)
+│   ├── render.py                  # FFmpeg pipeline (upstream)
+│   ├── grade.py                   # color presets (upstream)
+│   └── overlays/                  # анимации
+│       ├── pil_subs.py
+│       ├── manim_runner.py
+│       ├── remotion_runner.py
+│       └── hyperframes_runner.py
+└── skills/manim-video/            # 15 reference-файлов для Manim (upstream)
 ```
 
-The self-eval loop runs `timeline_view` on the _rendered output_ at every cut boundary — catches visual jumps, audio pops, hidden subtitles. You see the preview only after it passes.
+## Зависимости
 
-## Design principles
+См. [pyproject.toml](pyproject.toml). Ключевое:
+- Python 3.10+
+- FFmpeg + ffprobe
+- OpenTimelineIO (lossless EDL)
+- PySceneDetect (shot detection)
+- sentence-transformers (CLIP для audio-first)
+- Manim (опц., overlays для математики)
+- Node.js 22+ (опц., для Remotion / HyperFrames)
 
-1. **Text + on-demand visuals.** No frame-dumping. The transcript is the surface.
-2. **Audio is primary, visuals follow.** Cuts come from speech boundaries and silence gaps.
-3. **Ask → confirm → execute → self-eval → persist.** Never touch the cut without strategy approval.
-4. **Zero assumptions about content type.** Look, ask, then edit.
-5. **12 hard rules, artistic freedom elsewhere.** Production-correctness is non-negotiable. Taste isn't.
+## Лицензия
 
-See [`SKILL.md`](./SKILL.md) for the full production rules and editing craft.
+MIT (наследовано от [browser-use/video-use](https://github.com/browser-use/video-use)).
+
+## Связанные проекты
+
+- [TeleTranscribe](../TeleTranscribe/) — ASR-стек, источник транскрипций.
+- [Dev_Architect](../Dev_Architect/) — research tool.
+- [Agent_Architect](../Agent_Architect/) — образец структуры агентов в Razarabotka.
+
+## Roadmap
+
+- ✅ MVP: highlight + multi-clip + audio-first + format-mix
+- ⏳ TeleTranscribe MCP патч (`transcribe_file_json` с word-timestamps) — отдельная сессия, см. [PATCH_TELETRANSCRIBE_PROMPT.md](PATCH_TELETRANSCRIBE_PROMPT.md)
+- 📋 Streamlit/web UI поверх (когда выйдем в SaaS)
+- 📋 Lipsync для сгенерированных talking-heads (LatentSync / Sync.so)
+- 📋 C2PA watermarking (compliance EU AI Act)
+- 📋 `.clinerules/` 6-файловая структура (для Cline-совместимости)

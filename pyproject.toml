@@ -1,19 +1,34 @@
 [project]
-name = "video-use"
+name = "montazh-agent"
 version = "0.1.0"
-description = "Conversation-driven video editor skill for Claude Code"
+description = "Conversation-driven AI-видеомонтажёр для рилз/shorts/TikTok/YouTube. Форк browser-use/video-use, локализованный + TeleTranscribe MCP + B-roll генерация через MCP."
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
-    "requests",
-    "librosa",
-    "matplotlib",
-    "pillow",
-    "numpy",
+    # HTTP-клиент для прямых вызовов TeleTranscribe HTTP API (когда MCP недоступен)
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    # Анализ аудио для timeline-view (waveform PNG)
+    "librosa>=0.10",
+    "matplotlib>=3.7",
+    # Базовые изображения (filmstrip composer, PIL-overlays)
+    "pillow>=10.0",
+    "numpy>=1.24",
+    # EDL формат (lossless interchange, экспорт в FCPXML / Resolve / AAF)
+    "OpenTimelineIO>=0.17",
+    # Scene-detection для мульти-клипа и audio-first match
+    "scenedetect[opencv]>=0.6",
+    # CLIP-эмбеддинги для семантического матча phrase ↔ shot (audio-first mode)
+    "sentence-transformers>=3.0",
+    # FFmpeg как python wrapper (опционально, для filter-graph DSL)
+    "ffmpeg-python>=0.2",
 ]
 
 [project.optional-dependencies]
-animations = ["manim"]
+# Manim — для математических/диаграмм оверлеев. Тяжёлая зависимость, ставим по запросу.
+animations = ["manim>=0.18"]
+# Адаптеры OTIO для экспорта в FCPXML/EDL/AAF/DaVinci. Тоже опционально.
+otio-export = ["OpenTimelineIO-Plugins"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
