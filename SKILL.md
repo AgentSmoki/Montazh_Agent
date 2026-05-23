@@ -99,6 +99,7 @@ description: AI-видеомонтажёр через диалог. Работа
 | 1+ аудио (voice) + N видео | «голос как основа, видео подбери под фразы» | **audio-first** |
 | Любые видео | «нужны разные форматы» (рилз+квадрат+YT) | **format-mix** |
 | Только сценарий, нет видео | «сгенери целиком» | **generative-only** |
+| Бриф + название формата из «контент-завода» | см. `helpers/content_factory_presets.py` | **content-factory** (8 пресетов) |
 
 4. Запусти `python helpers/format_recommender.py edit/inventory.json --scenario scenario.md` чтобы получить 2-3 варианта форматов вывода.
 
@@ -165,10 +166,31 @@ inventory → transcribe → packed.md → согласование 2-3 форм
 
 Установка детально — в `install.md`.
 
+## Content-factory presets (8 готовых форматов)
+
+Из созвона с Дмитрием извлечена структура «контент-завода» — каталог проверенных форматов с готовыми pipeline'ами, моделями и CTA-правилами. См. `helpers/content_factory_presets.py`.
+
+| Ключ | Формат | Лучше для | Бюджет/ролик |
+|---|---|---|---|
+| `pure_neural` | Полностью нейронный (картинки + анимация + TTS) | Абстрактные темы, объяснения | ~$0.80 |
+| `neuro_blogger` | Персонаж-блогер (девочка/динозавр/банка крема) с lipsync | Ниши с нужной «личностью» | ~$1.20 |
+| `story_hype_iconic` | Live + нейронка с достопримечательностью (трансформер у башни) | Виральный рост, top-of-funnel | ~$1.50 |
+| `expert_with_infographics` | Live talking-head + слайды/инфографика поверх | **Lead-gen #1 — лучшая конверсия** | ~$0.30 |
+| `pure_talking_head` | Чистая говорящая голова + субтитры | Регулярный контент, минимум усилий | ~$0.05 |
+| `live_plus_neural_mix` | Live съёмки + сгенерированные B-roll вставки | Гибрид экспертного и нейронного | ~$0.60 |
+| `photo_animation_skit` | Анджелина-стиль: оживлённые фото в диалоге | Виральный рост | ~$1.80 |
+| `raw_sources_for_manual_edit` | Чистые исходники + EDL для ручной склейки в CapCut/DaVinci | Когда нужен профессиональный финал | переменная |
+
+**Важное правило (из созвона):** виральные форматы (`story_hype_iconic`, `photo_animation_skit`) дают миллионы просмотров, но **слабую конверсию** — потому что аудитория случайная. Lead-gen форматы (`expert_with_infographics`, `pure_talking_head`) должны быть с CTA в конце.
+
+**Анализ конкурентов перед production:** `helpers/analyze_reels.py --channel @x --top 20` — отбор паттернов с топ-роликов конкурентов.
+
 ## Helpers
 
 - **`inventory.py <videos_dir>`** — ffprobe всех source-файлов → `edit/inventory.json`. Печатает рекомендацию по режиму.
 - **`format_recommender.py <inventory.json> [--scenario .md]`** — 2-3 пресета формата вывода (рилз/квадрат/YT/...) с обоснованием.
+- **`content_factory_presets.py [--list | <preset_key>]`** — каталог 8 форматов «контент-завода» с pipeline'ами, моделями, бюджетами, CTA-правилами.
+- **`analyze_reels.py --channel <@handle> --top N`** — stub-шаблон для анализа Reels конкурентов (полная автоматизация в roadmap).
 - **Транскрипция через MCP:** агент вызывает `mcp__teletranscribe__transcribe_file_json /abs/path/X.mp4 speakers=N`, сохраняет raw в `edit/transcripts/_raw/X.json`, запускает `python helpers/transcribe_mcp.py --raw <raw>.json --out <edit>/transcripts/X.json`. Кешируется per-source.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (фразы, break на silence ≥ 0.5s или смене спикера).
 - **`scene_detect.py <video>`** — PySceneDetect ContentDetector → `edit/shots/<name>.json`.
