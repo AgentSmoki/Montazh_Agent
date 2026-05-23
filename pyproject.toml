@@ -3,7 +3,7 @@ name = "montazh-agent"
 version = "0.1.0"
 description = "Conversation-driven AI-видеомонтажёр для рилз/shorts/TikTok/YouTube. Форк browser-use/video-use, локализованный + TeleTranscribe MCP + B-roll генерация через MCP."
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     # HTTP-клиент для прямых вызовов TeleTranscribe HTTP API (когда MCP недоступен)
     "httpx>=0.27",
@@ -16,8 +16,11 @@ dependencies = [
     "numpy>=1.24",
     # EDL формат (lossless interchange, экспорт в FCPXML / Resolve / AAF)
     "OpenTimelineIO>=0.17",
-    # Scene-detection для мульти-клипа и audio-first match
-    "scenedetect[opencv]>=0.6",
+    # Scene-detection для мульти-клипа и audio-first match.
+    # opencv-python-headless: headless вариант шире поддерживает старые macOS.
+    # Версию pin'аем под macOS 12 Intel (свежий 4.13 дропнул эти wheels).
+    "scenedetect>=0.6",
+    "opencv-python-headless<4.10",
     # CLIP-эмбеддинги для семантического матча phrase ↔ shot (audio-first mode)
     "sentence-transformers>=3.0",
     # FFmpeg как python wrapper (опционально, для filter-graph DSL)
@@ -36,3 +39,26 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = []
+
+# scenedetect транзитивно тащит opencv-python 4.13+, у которого нет
+# wheel для macOS 12 Intel. Override на последнюю версию с поддержкой.
+# Действует только в этом проекте — другие venv'ы не задеты.
+[tool.uv]
+# Pin для macOS 12 Intel + Python 3.12 — где новые версии этих пакетов
+# дропнули pre-built wheels. Override действует только в этом проекте.
+override-dependencies = [
+    # OpenCV: новые 4.13+ нет wheel для macOS 12 Intel.
+    "opencv-python<4.10",
+    # PyTorch для Intel mac заморожен на 2.2.x — новее только для arm64/Linux/Win.
+    "torch<2.3",
+    "torchvision<0.18",
+    # transformers 5.x требует PyTorch>=2.4 — несовместимо с нашим 2.2.2.
+    # sentence-transformers 4+ тянет новый transformers. Pin'аем старую ветку.
+    "transformers<4.45",
+    "sentence-transformers<3.5",
+    # llvmlite/numba/librosa: новые версии требуют сборки llvmlite из исходников
+    # (нужен системный LLVM). Старые версии имеют готовые wheels.
+    "librosa<0.11",
+    "numba<0.60",
+    "llvmlite<0.43",
+]
