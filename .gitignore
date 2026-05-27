@@ -74,3 +74,9 @@ project.md
 # graphify internal state
 graphify-env/
 graphify-out/.graphify_*
+
+# test_sessions/ — рабочая директория для тестовых монтажей.
+# Коммитятся только README.md и scenario_template.md, остальное локально.
+test_sessions/*
+!test_sessions/README.md
+!test_sessions/scenario_template.md
