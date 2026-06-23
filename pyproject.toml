@@ -1,7 +1,7 @@
 [project]
 name = "montazh-agent"
-version = "0.1.0"
-description = "Conversation-driven AI-видеомонтажёр для рилз/shorts/TikTok/YouTube. Форк browser-use/video-use, локализованный + TeleTranscribe MCP + B-roll генерация через MCP."
+version = "0.2.0"
+description = "Conversation-driven AI-видеомонтажёр для рилз/shorts/TikTok/YouTube. Форк browser-use/video-use, локализованный + TeleTranscribe MCP + B-roll генерация через MCP. Кроссплатформенный (macOS/Windows/Linux)."
 license = { file = "LICENSE" }
 requires-python = ">=3.10,<3.13"
 

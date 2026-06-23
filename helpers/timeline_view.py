@@ -151,22 +151,20 @@ def find_silences(words: list[dict], start: float, end: float, threshold: float 
 # -------- Font loading -------------------------------------------------------
 
 
-FONT_CANDIDATES = [
-    "/System/Library/Fonts/Menlo.ttc",
-    "/System/Library/Fonts/Helvetica.ttc",
-    "/System/Library/Fonts/SFNSMono.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-]
-
-
 def load_font(size: int) -> ImageFont.ImageFont:
-    for fp in FONT_CANDIDATES:
-        if Path(fp).exists():
-            try:
-                return ImageFont.truetype(fp, size)
-            except Exception:
-                continue
+    # Кроссплатформенный моноширинный шрифт под текущую ОС
+    # (Menlo на macOS, Consolas на Windows, DejaVu Sans Mono на Linux).
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import platform_paths as pp
+
+    mono = pp.find_mono()
+    if mono:
+        try:
+            return ImageFont.truetype(str(mono), size)
+        except Exception:
+            pass
     return ImageFont.load_default()
 
 

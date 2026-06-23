@@ -10,16 +10,27 @@
 
 1. **Прочитай `SKILL.md` целиком.** Это системный промпт агента — 17 hard rules, mode dispatch, pipeline'ы, anti-patterns. Без него ты не знаешь как работать.
 
-2. **Если есть `graphify-out/GRAPH_REPORT.md`** — прочитай его для понимания зависимостей между helpers. (На свежем агенте может ещё не быть — построится через `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"`)
+2. **Определи ОС и проверь инструменты (env-doctor).** Запусти один раз за сессию:
+   ```bash
+   python helpers/env_doctor.py        # на Windows: py helpers\env_doctor.py
+   ```
+   Доктор сам определит ОС (macOS / Windows / Linux / WSL), проверит ffmpeg,
+   ffprobe, python≥3.10, Pillow, шрифты, TT_API_KEY и выдаст команды установки
+   **под текущую ОС** для всего, чего не хватает. Если `ok: false` — покажи
+   пользователю недостающее и команду установки, и только тогда задай вопрос.
+   ОС у пользователя **не спрашивай** — она детектится. Различия ОС (шелл,
+   шрифты, экранирование путей в ffmpeg) — в `docs/os_profiles.md`.
 
-3. **Проверь `.env`:**
+3. **Если есть `graphify-out/GRAPH_REPORT.md`** — прочитай его для понимания зависимостей между helpers. (На свежем агенте может ещё не быть — построится через `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"`)
+
+4. **Проверь `.env`:**
    - `TT_API_KEY` должен быть установлен (обязательно).
    - `HIGGSFIELD_API_KEY`, `FAL_KEY`, `ELEVENLABS_API_KEY`, `SUNO_API_KEY` — опционально, по фичам.
    - Если `.env` отсутствует — скопируй из `.env.example` и попроси у пользователя ключи.
 
-4. **Проверь MCP-сервера:** `claude mcp list` должен показать как минимум `teletranscribe`. Идеально — также `higgsfield`, `fal-ai`, `elevenlabs`. Если каких-то нет — см. `install.md`.
+5. **Проверь MCP-сервера:** `claude mcp list` должен показать как минимум `teletranscribe`. Идеально — также `higgsfield`, `fal-ai`, `elevenlabs`. Если каких-то нет — см. `install.md`.
 
-5. **Если в текущей `videos_dir` есть `edit/project.md`** — прочитай последнюю сессию и подведи итог одним предложением до того как спрашивать «продолжаем?».
+6. **Если в текущей `videos_dir` есть `edit/project.md`** — прочитай последнюю сессию и подведи итог одним предложением до того как спрашивать «продолжаем?».
 
 ---
 
@@ -86,6 +97,32 @@ LLM работает в основном на Layer 3-4 (читает packed.md,
 | 1+ аудио + N видео | «голос как основа» | **audio-first** |
 | Любые видео | «нужны разные форматы» | **format-mix** |
 | Только сценарий | «сгенери целиком» | **generative-only** |
+
+## Кроссплатформенность (macOS / Windows / Linux)
+
+Агент работает на любой из трёх ОС. ОС определяется автоматически — **не спрашивай
+пользователя**, запусти `helpers/env_doctor.py`.
+
+**Слои:**
+- `helpers/platform_paths.py` — единая точка правды: `os_name()`, `font_dirs()`,
+  `find_bold_sans()`, `find_mono()`, `libass_font_name()`, `ffmpeg_bin()`. Любой
+  ОС-зависимый путь берётся отсюда, не хардкодится.
+- `helpers/env_doctor.py` — диагностика инструментов + команды установки под ОС.
+- `docs/os_profiles.md` — полная таблица различий и Windows-грабли.
+
+**Правило для агента при работе на Windows:**
+- Шелл — PowerShell/cmd: heredoc (`<<EOF`) не работает → файлы создавай через
+  `Set-Content` или `py -c`. Python вызывается `py`, не `python3`.
+- Пути в ffmpeg-фильтрах (`subtitles`, `drawtext`): экранируй диск `C:\` →
+  `C\:/`, либо запускай ffmpeg из папки `edit/` с относительными путями, либо
+  строй путь через `Path(...).as_posix()`.
+- Шрифты подставляются автоматически (Arial вместо Helvetica) — ничего руками
+  прописывать не нужно.
+- `videos_dir` держи неглубоко (`C:\mz\<проект>`) — лимит пути 260 символов.
+
+**Правило при правке кода:** новый ОС-зависимый код добавляй ТОЛЬКО в
+`platform_paths.py`. В helpers запрещены хардкод-пути вида `/System/Library/...`
+или `C:\Windows\...`.
 
 ## 17 Hard Rules (повтор из SKILL.md)
 
@@ -180,6 +217,7 @@ Montazh_Agent/
 ├── .gitignore
 ├── LICENSE                        # MIT (upstream)
 ├── docs/                          # доп. документация (не точки входа)
+│   ├── os_profiles.md             # различия macOS/Windows/Linux + Windows-грабли
 │   ├── PATCH_TT_DESCRIBE_IMAGE_PROMPT.md  # спека патча describe_image для TT MCP (задеплоен)
 │   └── vlipsy_partnership_request.md      # черновик письма на API-доступ Vlipsy
 ├── research/                      # исследовательские заметки по стеку
@@ -187,6 +225,8 @@ Montazh_Agent/
 │   ├── 04_vps_telegram_takopi.md
 │   └── 05_word_boundary_methodology_findings.md
 ├── helpers/                       # ВЕСЬ исполняемый код (только .py)
+│   ├── platform_paths.py          # кроссплатформенные пути/шрифты/бинари (ОС-абстракция)
+│   ├── env_doctor.py              # диагностика инструментов под ОС (Шаг 0)
 │   ├── transcribe_mcp.py          # обёртка TT MCP → Scribe-format JSON
 │   ├── inventory.py               # ffprobe всех источников
 │   ├── format_recommender.py      # 2-3 варианта формата вывода

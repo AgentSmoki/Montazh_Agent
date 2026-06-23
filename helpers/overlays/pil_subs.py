@@ -59,17 +59,25 @@ PRESETS = {
 
 
 def find_font(font_name: str, size: int):
+    """Кроссплатформенный поиск шрифта: сначала запрошенное имя в системных
+    каталогах текущей ОС, затем жирный sans по умолчанию (Helvetica на macOS,
+    Arial на Windows, DejaVu на Linux), в крайнем случае — PIL default."""
+    import sys
     from PIL import ImageFont
-    candidates = [
-        f"/System/Library/Fonts/{font_name}.ttf",
-        f"/System/Library/Fonts/{font_name}.ttc",
-        f"/System/Library/Fonts/Supplemental/{font_name}.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-    ]
-    for path in candidates:
-        if Path(path).exists():
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import platform_paths as pp
+
+    # 1) точное имя пресета (например "Helvetica-Bold") как basename в font_dirs
+    by_name = pp._find_in_font_dirs(
+        [f"{font_name}.ttf", f"{font_name}.ttc", f"{font_name}.otf"]
+    )
+    # 2) дефолтный жирный sans под ОС
+    fallback = pp.find_bold_sans()
+    for path in (by_name, fallback):
+        if path:
             try:
-                return ImageFont.truetype(path, size, index=0)
+                return ImageFont.truetype(str(path), size, index=0)
             except Exception:
                 continue
     return ImageFont.load_default()

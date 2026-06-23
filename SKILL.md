@@ -64,6 +64,7 @@ description: AI-видеомонтажёр через диалог. Работа
     - `stat` — overlay-панч (счётчик/цифра): 1.5-2.5с, обычно с PIL-оверлеем.
     **Корень второго бага preview_v4**: плотные экраны (методика, контент-план) шли как `talk` по 5с со статичным зумом → не успеть прочитать + резкий «и бац» без причинно-следственной связи. Лечится `screen_read` + push-in + порядком beats причина→следствие.
 19. **Единый размер кадра для всех сегментов.** Все extract'ы приводятся к одному размеру (1080×1920 портрет) через cover-crop, иначе lossless concat (`-c copy`) криво склеит источники разной ширины (1072 vs 1080). Enforced в `render.py:build_geometry_vf`.
+20. **Кроссплатформенность через `platform_paths.py` — никаких хардкод-путей ОС.** Шрифты, каталоги, бинари (ffmpeg/ffprobe) берутся через `helpers/platform_paths.py`, который сам выбирает путь под ОС. Хардкод `/System/Library/Fonts/...` (или `C:\Windows\...`) — молчаливый сбой: на чужой ОС шрифт не найдётся, libass/PIL тихо упадёт на дефолт, и стиль субтитров поедет. ОС определяется машиной (`env_doctor.py`), **не вопросом пользователю**. На Windows помни про шелл (PowerShell, без heredoc) и экранирование путей в ffmpeg-фильтрах — детали в `docs/os_profiles.md`.
 
 Всё прочее в этом документе — это рабочий пример. Отклоняйся когда материал требует.
 
@@ -175,13 +176,29 @@ inventory → transcribe → packed.md → согласование 2-3 форм
 
 ## Setup (cold start checks)
 
-При первом запуске сессии проверь:
-- `TT_API_KEY` есть в `.env` или env. Без него MCP TeleTranscribe не работает.
+**Шаг 0 — определи ОС и проверь инструменты (один раз за сессию):**
+```bash
+python helpers/env_doctor.py        # Windows: py helpers\env_doctor.py
+```
+Доктор сам детектит ОС (macOS / Windows / Linux / WSL) и проверяет ffmpeg,
+ffprobe, python≥3.10, Pillow, шрифты, TT_API_KEY. ОС у пользователя **не
+спрашивай** — она определяется машиной. Если `ok: false` — покажи пользователю
+недостающее и команду установки **под его ОС** (доктор их печатает), и только
+тогда задай вопрос. Если `ok: true` — молча продолжай.
+
+Что проверяется:
+- `TT_API_KEY` в `.env`/env. Без него MCP TeleTranscribe не работает.
 - `ffmpeg` + `ffprobe` на PATH.
-- Python deps установлены (`uv sync` в `Montazh_Agent/`).
+- `python≥3.10` + Pillow. Deps: `uv sync` в `Montazh_Agent/`.
+- Шрифты под ОС (резолвятся автоматически через `platform_paths.py`).
 - `claude mcp list` показывает `teletranscribe` (как минимум). Желательно также `higgsfield`, `fal-ai`, `elevenlabs`.
-- Node.js + npm для HyperFrames/Remotion (опционально, по first-use).
-- `yt-dlp`, Manim — только при первом использовании.
+- Node.js + npm для HyperFrames/Remotion, `yt-dlp`, Manim — опционально, по first-use.
+
+**ОС-специфика** (полностью — в `docs/os_profiles.md`):
+- На **Windows** шелл PowerShell/cmd: heredoc не работает (файлы через
+  `Set-Content`/`py -c`), пути в ffmpeg-фильтрах экранируй `C:\`→`C\:/` или
+  работай из `edit/` с относительными путями. Helvetica→Arial — автоматически.
+- На **macOS/Linux** — штатный bash/zsh.
 
 Установка детально — в `install.md`.
 
@@ -206,6 +223,8 @@ inventory → transcribe → packed.md → согласование 2-3 форм
 
 ## Helpers
 
+- **`env_doctor.py [--json]`** — Шаг 0: детект ОС + проверка ffmpeg/ffprobe/python/Pillow/шрифтов/TT_API_KEY + команды установки под ОС. `--json` для машинного чтения.
+- **`platform_paths.py`** — ОС-абстракция (импортируется другими helpers): `os_name()`, `find_bold_sans()`, `find_mono()`, `libass_font_name()`, `ffmpeg_bin()`. Прямой запуск печатает JSON-детект.
 - **`inventory.py <videos_dir>`** — ffprobe всех source-файлов → `edit/inventory.json`. Печатает рекомендацию по режиму.
 - **`format_recommender.py <inventory.json> [--scenario .md]`** — 2-3 пресета формата вывода (рилз/квадрат/YT/...) с обоснованием.
 - **`content_factory_presets.py [--list | <preset_key>]`** — каталог 8 форматов «контент-завода» с pipeline'ами, моделями, бюджетами, CTA-правилами.

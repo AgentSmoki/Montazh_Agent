@@ -48,8 +48,23 @@ except Exception:
 # baseline roughly 30% up from the bottom on any aspect — clear of the UI on
 # every major vertical-video platform. Do not drop this below ~75 without a
 # specific reason.
+def _sub_font_name() -> str:
+    """Имя шрифта для libass под текущую ОС: Helvetica (macOS) есть только на
+    маке — на Windows нужен Arial, на Linux DejaVu Sans. Иначе libass молча
+    падает на дефолт и стиль субтитров плывёт."""
+    try:
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import platform_paths as pp
+
+        return pp.libass_font_name()
+    except Exception:
+        return "Arial"  # самый безопасный общий дефолт
+
+
 SUB_FORCE_STYLE = (
-    "FontName=Helvetica,FontSize=15,Bold=1,"
+    f"FontName={_sub_font_name()},FontSize=15,Bold=1,"
     "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H00000000,"
     "BorderStyle=1,Outline=1,Shadow=0,"
     "Alignment=2,MarginV=90"
@@ -142,7 +157,11 @@ def is_portrait_source(video: Path) -> bool:
              "-of", "csv=p=0", str(video)],
             capture_output=True, text=True, check=True,
         )
-        w, h = map(int, out.stdout.strip().split(","))
+        # csv=p=0 может вернуть хвостовую запятую ("1080,1920,") → пустые
+        # токены ломали map(int) и роняли функцию в except → портретные
+        # iPhone-клипы ошибочно считались ландшафтом. Берём первые два числа.
+        nums = [int(p) for p in out.stdout.strip().split(",") if p.strip()]
+        w, h = nums[0], nums[1]
         return h > w
     except Exception:
         return False
@@ -151,11 +170,15 @@ def is_portrait_source(video: Path) -> bool:
 # -------- Per-segment extraction (Rule 2 + Rule 3) --------------------------
 
 
-FPS = 24  # вывод фиксирован 24fps (см. -r ниже) — push-in считает кадры по нему
+FPS = 30  # вывод фиксирован 30fps — push-in считает кадры по нему.
+# 30 (а не 24) выбран намеренно: источники 60fps → 60/30=2 даёт ЧИСТУЮ
+# децимацию кадров 2:1 без джиттера выбора, который при 60→24 (2.5:1)
+# смещал кадры внутри zoompan и читался как рассинхрон «звук быстрее видео».
 
 
 def build_geometry_vf(
-    portrait: bool, draft: bool, effect: str, duration: float
+    portrait: bool, draft: bool, effect: str, duration: float,
+    focus_x: float = 0.5, focus_y: float = 0.5,
 ) -> str:
     """Вернуть vf-цепочку геометрии: COVER-scale к точному кадру ИЛИ push-in.
 
@@ -176,11 +199,16 @@ def build_geometry_vf(
 
     if effect == "pushin":
         n = max(2, int(round(duration * FPS)))
+        # Фокус зума — нормализованная точка (focus_x, focus_y) в кадре.
+        # Default центр (0.5,0.5). Для ростовых talking-head лицо в верхней
+        # трети → focus_y≈0.3, чтобы push-in наезжал на ЛИЦО, а не на торс.
+        # clip(...) держит окно внутри кадра на любом zoom.
         return (
             f"scale={W*2}:{H*2}:force_original_aspect_ratio=increase,"
             f"crop={W*2}:{H*2},"
             f"zoompan=z='min(1+0.12*on/{n-1}\\,1.12)':d=1:"
-            f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+            f"x='clip(iw*{focus_x}-(iw/zoom/2)\\,0\\,iw-iw/zoom)':"
+            f"y='clip(ih*{focus_y}-(ih/zoom/2)\\,0\\,ih-ih/zoom)':"
             f"s={W}x{H}:fps={FPS}"
         )
     return f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
@@ -195,6 +223,8 @@ def extract_segment(
     preview: bool = False,
     draft: bool = False,
     effect: str = "",
+    focus_x: float = 0.5,
+    focus_y: float = 0.5,
 ) -> None:
     """Extract a cut range as its own MP4 with grade + 30ms audio fades baked in.
 
@@ -214,7 +244,8 @@ def extract_segment(
     vf_parts: list[str] = []
     if is_hdr_source(source):
         vf_parts.append(TONEMAP_CHAIN)
-    vf_parts.append(build_geometry_vf(portrait, draft, effect, duration))
+    vf_parts.append(build_geometry_vf(portrait, draft, effect, duration,
+                                      focus_x=focus_x, focus_y=focus_y))
     if grade_filter:
         vf_parts.append(grade_filter)
     vf = ",".join(vf_parts)
@@ -247,10 +278,11 @@ def extract_segment(
         "-i", str(source),
         "-t", f"{duration:.3f}",
         "-vf", vf,
-        "-af", af,
+        "-af", af + ",aresample=async=1:first_pts=0",
         *codec_args,
-        "-pix_fmt", "yuv420p", "-r", "24",
+        "-pix_fmt", "yuv420p", "-r", str(FPS), "-vsync", "cfr",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-video_track_timescale", str(FPS * 1000),
         "-movflags", "+faststart",
         str(out_path),
     ]
@@ -303,8 +335,11 @@ def extract_all_segments(
         print(f"  [{i:02d}] {src_name}  {start:7.2f}-{end:7.2f}  ({duration:5.2f}s)  {note}{eff_tag}")
         if is_auto:
             print(f"        grade: {seg_filter or '(none)'}")
+        focus_x = float(r.get("focus_x", 0.5))
+        focus_y = float(r.get("focus_y", 0.5))
         extract_segment(src_path, start, duration, seg_filter, out_path,
-                        preview=preview, draft=draft, effect=effect)
+                        preview=preview, draft=draft, effect=effect,
+                        focus_x=focus_x, focus_y=focus_y)
         seg_paths.append(out_path)
 
     return seg_paths
