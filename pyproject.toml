@@ -8,7 +8,7 @@ requires-python = ">=3.10,<3.13"
 # Default-зависимости — lean stack без PyTorch / sentence-transformers.
 # Для audio-first режима теперь используется TT describe-image (multimodal LLM
 # через MCP), что снимает 2.5 ГБ зависимостей с базовой установки.
-# По рекомендации Gemini Deep Research (research_stack_for_my_machine.md).
+# По рекомендации Gemini Deep Research (research/03_research_stack.md).
 dependencies = [
     # HTTP-клиент для прямых вызовов TeleTranscribe HTTP API (когда MCP недоступен)
     "httpx>=0.27",

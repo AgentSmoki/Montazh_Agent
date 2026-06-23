@@ -1,0 +1,332 @@
+"""Генерация фоновой музыки под ролик + подмешивание с ducking под голос.
+
+Провайдеры (порядок автопереключения настраивается). Ключи — из .env/окружения,
+НИКОГДА не в коде:
+  - elevenlabs   ELEVENLABS_API_KEY   REST, отдаёт mp3 напрямую, без callback (проще всего)
+  - fal          FAL_KEY              fal.ai music-модели
+  - sunoapi      SUNOAPI_ORG_KEY      sunoapi.org — ТРЕБУЕТ публичный callBackUrl
+  - apiframe     APIFRAME_KEY         apiframe.ai (уточнить точный endpoint в их доке)
+  - acedata      ACEDATA_SUNO_KEY     acedata.cloud (нужен баланс на аккаунте)
+
+ducking: музыка приглушается под речь через sidechaincompress (голос = ключ).
+Это правильный приём вместо статичного -25dB: музыка громкая в паузах,
+тихая под голосом. Уровень регулируется параметром.
+
+CLI:
+    # сгенерить трек:
+    python helpers/music_gen.py generate "lo-fi tech ambient" --duration 56 \
+        --out <edit>/music_bed.mp3 [--provider elevenlabs]
+    # подмешать под готовое видео с ducking:
+    python helpers/music_gen.py duck <video.mp4> <music.mp3> -o <out.mp4> [--music-db -12]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+
+def _load_env() -> None:
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    for ln in env_path.read_text(encoding="utf-8").splitlines():
+        ln = ln.strip()
+        if ln and not ln.startswith("#") and "=" in ln:
+            k, v = ln.split("=", 1)
+            if k.strip() and k.strip() not in os.environ:
+                os.environ[k.strip()] = v.strip()
+
+
+# ---------- провайдеры генерации ---------------------------------------------
+
+def gen_elevenlabs(prompt: str, duration_s: float, out_path: Path) -> bool:
+    """ElevenLabs Music — POST /v1/music, отдаёт mp3 бинарём. Без callback."""
+    key = os.environ.get("ELEVENLABS_API_KEY")
+    if not key:
+        return False
+    ms = max(3000, min(600000, int(duration_s * 1000)))
+    body = json.dumps({
+        "prompt": prompt,
+        "music_length_ms": ms,
+        "force_instrumental": True,
+        "model_id": "music_v1",
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.elevenlabs.io/v1/music?output_format=mp3_44100_128",
+        data=body, method="POST",
+        headers={"Content-Type": "application/json", "xi-api-key": key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            data = r.read()
+        if data[:3] == b"ID3" or len(data) > 10000:  # похоже на mp3
+            out_path.write_bytes(data)
+            return True
+    except Exception as e:  # noqa: BLE001
+        print(f"elevenlabs: {e}", file=sys.stderr)
+    return False
+
+
+def gen_sunoapi_org(prompt: str, duration_s: float, out_path: Path,
+                    callback_url: str | None = None) -> bool:
+    """sunoapi.org — требует callBackUrl. Если его нет — провайдер недоступен локально.
+    Передай --callback (публичный URL вебхука), иначе вернёт False."""
+    key = os.environ.get("SUNOAPI_ORG_KEY")
+    if not key:
+        return False
+    cb = callback_url or os.environ.get("SUNO_CALLBACK_URL")
+    if not cb:
+        print("sunoapi.org: нужен callBackUrl (--callback или SUNO_CALLBACK_URL)",
+              file=sys.stderr)
+        return False
+    body = json.dumps({
+        "customMode": False, "instrumental": True,
+        "prompt": prompt, "model": "V4_5", "callBackUrl": cb,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.sunoapi.org/api/v1/generate", data=body, method="POST",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            resp = json.loads(r.read().decode())
+        task_id = (resp.get("data") or {}).get("taskId")
+        if not task_id:
+            print(f"sunoapi.org: нет taskId — {resp}", file=sys.stderr)
+            return False
+        # poll
+        poll = f"https://api.sunoapi.org/api/v1/generate/record-info?taskId={task_id}"
+        for _ in range(40):
+            time.sleep(6)
+            pr = urllib.request.Request(poll, headers={"Authorization": f"Bearer {key}"})
+            with urllib.request.urlopen(pr, timeout=30) as r:
+                pd = json.loads(r.read().decode())
+            st = (pd.get("data") or {}).get("status")
+            if st == "SUCCESS":
+                songs = ((pd.get("data") or {}).get("response") or {}).get("sunoData") or []
+                if songs and songs[0].get("audioUrl"):
+                    _dl(songs[0]["audioUrl"], out_path)
+                    return True
+            if st in ("FAILED", "ERROR"):
+                print(f"sunoapi.org: задача {st}", file=sys.stderr)
+                return False
+    except Exception as e:  # noqa: BLE001
+        print(f"sunoapi.org: {e}", file=sys.stderr)
+    return False
+
+
+def gen_apiframe(prompt: str, duration_s: float, out_path: Path,
+                style: str = "lo-fi, ambient, chill, instrumental") -> bool:
+    """apiframe.ai Suno — POST /v2/music/generate → jobId, poll GET /v2/jobs/{id}.
+
+    Подтверждено живым запросом: header X-API-Key, async (HTTP 202 + jobId),
+    fetch через GET /v2/jobs/{jobId} (status QUEUED→PROCESSING→ ...).
+    Suno генерит 2 трека; берём первый audioUrl. duration_s не задаётся напрямую
+    (Suno V4.5 сам ~2-4 мин) — обрежем под ролик при ducking (-shortest)."""
+    key = os.environ.get("APIFRAME_KEY")
+    if not key:
+        return False
+    body = json.dumps({
+        "prompt": prompt, "model": "suno",
+        "sunoParams": {"model_version": "V4_5PLUS", "style": style},
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.apiframe.ai/v2/music/generate", data=body, method="POST",
+        headers={"X-API-Key": key, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            resp = json.loads(r.read().decode())
+        job = resp.get("jobId") or resp.get("id")
+        if not job:
+            print(f"apiframe: нет jobId — {resp}", file=sys.stderr)
+            return False
+        poll = f"https://api.apiframe.ai/v2/jobs/{job}"
+        for _ in range(60):  # до ~6 мин
+            time.sleep(6)
+            pr = urllib.request.Request(poll, headers={"X-API-Key": key})
+            with urllib.request.urlopen(pr, timeout=30) as r:
+                pd = json.loads(r.read().decode())
+            st = (pd.get("status") or "").upper()
+            if st in ("COMPLETED", "SUCCESS", "FINISHED", "DONE"):
+                url = _extract_audio_url(pd)
+                if url:
+                    _dl(url, out_path)
+                    return True
+                print(f"apiframe: готово, но нет audioUrl — {str(pd)[:300]}", file=sys.stderr)
+                return False
+            if st in ("FAILED", "ERROR", "CANCELLED"):
+                print(f"apiframe: задача {st}", file=sys.stderr)
+                return False
+    except Exception as e:  # noqa: BLE001
+        print(f"apiframe: {e}", file=sys.stderr)
+    return False
+
+
+def _extract_audio_url(pd: dict):
+    """Достать первый audio URL из ответа apiframe (структура output варьируется)."""
+    out = pd.get("output") or pd.get("result") or pd.get("data") or {}
+    # варианты: output.audioUrl / output[0].audio_url / output.tracks[0].url
+    if isinstance(out, dict):
+        for k in ("audioUrl", "audio_url", "url", "mp3", "audio"):
+            if isinstance(out.get(k), str):
+                return out[k]
+        for listkey in ("tracks", "songs", "items", "clips"):
+            arr = out.get(listkey)
+            if isinstance(arr, list) and arr:
+                for k in ("audioUrl", "audio_url", "url", "mp3"):
+                    if isinstance(arr[0].get(k), str):
+                        return arr[0][k]
+    if isinstance(out, list) and out:
+        for k in ("audioUrl", "audio_url", "url", "mp3"):
+            if isinstance(out[0].get(k), str):
+                return out[0][k]
+    return None
+
+
+def _dl(url: str, dest: Path) -> None:
+    req = urllib.request.Request(url, headers={"User-Agent": "Montazh_Agent/1.0"})
+    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
+        f.write(r.read())
+
+
+PROVIDERS = {
+    "elevenlabs": gen_elevenlabs,
+    "apiframe": gen_apiframe,
+    "sunoapi": gen_sunoapi_org,
+}
+# fal/acedata — добавить при необходимости
+
+
+def generate(prompt: str, duration_s: float, out_path: Path,
+             order: list[str] | None = None, **kw) -> bool:
+    _load_env()
+    order = order or ["elevenlabs", "sunoapi"]
+    for prov in order:
+        fn = PROVIDERS.get(prov)
+        if not fn:
+            continue
+        print(f"music: пробую провайдер '{prov}'…")
+        try:
+            if fn(prompt, duration_s, out_path, **({} if prov != "sunoapi" else
+                  {"callback_url": kw.get("callback_url")})):
+                print(f"✓ музыка от '{prov}' → {out_path.name}")
+                return True
+        except Exception as e:  # noqa: BLE001
+            print(f"{prov}: {e}", file=sys.stderr)
+    print("✗ ни один музыкальный провайдер не сработал — проверь ключи в .env "
+          "(ELEVENLABS_API_KEY проще всего: REST без callback)", file=sys.stderr)
+    return False
+
+
+# ---------- ducking (sidechaincompress) --------------------------------------
+
+def duck_under_voice(video_path: Path, music_path: Path, out_path: Path,
+                     music_gain_db: float = -12.0, ratio: float = 8.0,
+                     memes: list[dict] | None = None) -> bool:
+    """Подмешать music_path в аудио video_path с ducking под голос видео.
+
+    Голос видео = sidechain-ключ: когда есть речь, музыка автоматически
+    приседает. music_gain_db — базовая громкость музыки (тише голоса).
+    Музыка зацикливается/обрезается под длину видео.
+
+    memes: список {file, start, duration, gain_db} — звук мема подмешивается
+    в свой момент; на время мема МУЗЫКА глушится (Богдан: «звук мема вместо
+    музыки, голос остаётся»). Реализуем через volume-энвелоп музыки = 0 в
+    окне мема + добавление меm-аудио с adelay.
+    """
+    memes = memes or []
+    inputs = ["-i", str(video_path), "-i", str(music_path)]
+    for m in memes:
+        inputs += ["-i", str(m["file"])]
+
+    parts = []
+    # музыка: зацикл + базовая громкость; если есть мемы — глушим в их окнах
+    music_chain = f"[1:a]aloop=loop=-1:size=2e9,volume={music_gain_db}dB"
+    if memes:
+        # volume=0 внутри каждого окна мема (enable), иначе как есть
+        cond = "+".join(f"between(t,{float(m['start']):.3f},{float(m['start'])+float(m['duration']):.3f})"
+                        for m in memes)
+        music_chain += f",volume=0:enable='{cond}'"
+    parts.append(music_chain + "[mus]")
+    parts.append("[0:a]asplit=2[voc][sc]")
+    parts.append(f"[mus][sc]sidechaincompress=threshold=0.03:ratio={ratio}:attack=5:release=300[ducked]")
+
+    mix_inputs = "[voc][ducked]"
+    for j, m in enumerate(memes):
+        idx = 2 + j  # 0=video,1=music
+        delay_ms = int(float(m["start"]) * 1000)
+        gain = float(m.get("gain_db", 0.0))
+        parts.append(
+            f"[{idx}:a]adelay={delay_ms}|{delay_ms},volume={gain}dB[meme{j}]"
+        )
+        mix_inputs += f"[meme{j}]"
+    n_mix = 2 + len(memes)
+    parts.append(f"{mix_inputs}amix=inputs={n_mix}:duration=first:dropout_transition=0:normalize=0[aout]")
+
+    cmd = [
+        "ffmpeg", "-y", *inputs,
+        "-filter_complex", ";".join(parts),
+        "-map", "0:v", "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-shortest", "-movflags", "+faststart",
+        str(out_path),
+    ]
+    print(f"ducking music под голос → {out_path.name} (music {music_gain_db}dB, "
+          f"ratio {ratio}, memes={len(memes)})")
+    p = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    if p.returncode != 0:
+        print(p.stderr.decode()[-1000:], file=sys.stderr)
+        return False
+    return True
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Генерация фоновой музыки + ducking")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    g = sub.add_parser("generate")
+    g.add_argument("prompt")
+    g.add_argument("--duration", type=float, default=56.0)
+    g.add_argument("--out", type=Path, required=True)
+    g.add_argument("--provider", default=None, help="форсировать провайдера")
+    g.add_argument("--callback", default=None, help="callBackUrl для sunoapi.org")
+
+    d = sub.add_parser("duck")
+    d.add_argument("video", type=Path)
+    d.add_argument("music", type=Path)
+    d.add_argument("-o", "--out", type=Path, required=True)
+    d.add_argument("--music-db", type=float, default=-12.0)
+    d.add_argument("--ratio", type=float, default=8.0)
+    d.add_argument("--meme", action="append", default=[],
+                   help="звук мема: 'file.mp4@START:DUR[:GAINdB]' (можно несколько)")
+
+    args = ap.parse_args()
+    if args.cmd == "generate":
+        order = [args.provider] if args.provider else None
+        ok = generate(args.prompt, args.duration, args.out, order=order,
+                      callback_url=args.callback)
+        sys.exit(0 if ok else 1)
+    elif args.cmd == "duck":
+        memes = []
+        for spec in args.meme:
+            # 'file@START:DUR[:GAIN]'
+            fp, rest = spec.rsplit("@", 1)
+            bits = rest.split(":")
+            m = {"file": fp, "start": float(bits[0]), "duration": float(bits[1])}
+            if len(bits) > 2:
+                m["gain_db"] = float(bits[2])
+            memes.append(m)
+        ok = duck_under_voice(args.video, args.music, args.out,
+                              music_gain_db=args.music_db, ratio=args.ratio,
+                              memes=memes)
+        sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()

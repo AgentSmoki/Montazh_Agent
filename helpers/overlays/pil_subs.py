@@ -45,13 +45,14 @@ PRESETS = {
         "font_name": "Roboto-Bold",
     },
     "reels_animated": {
-        "font_size_ratio": 0.07,
+        "font_size_ratio": 0.055,
         "color": (255, 255, 255),
         "stroke": (0, 0, 0),
-        "stroke_width": 3,
+        "stroke_width": 6,
         "case": "upper",
-        "y_position": 0.50,
+        "y_position": 0.78,
         "font_name": "Helvetica-Bold",
+        "bg": (0, 0, 0, 170),
         "animate": "fade_pulse",
     },
 }

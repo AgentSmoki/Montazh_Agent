@@ -148,15 +148,13 @@ def main() -> None:
     if args.check:
         print(
             "Чтобы транскрибировать через TeleTranscribe MCP:\n\n"
-            "1. Из чата вызови MCP-tool:\n"
-            "     mcp__teletranscribe__transcribe_file_json <abs/path/video.mp4> speakers=<N>\n"
-            "   (после патча MCP — должен возвращать dict с utterances[].words[])\n\n"
+            "1. Из чата вызови MCP-tool (возвращает dict с utterances[].words[]):\n"
+            "     mcp__teletranscribe__transcribe_file_json <abs/path/video.mp4> speakers=<N>\n\n"
             "2. Сохрани raw-ответ в <edit>/transcripts/_raw/<stem>.json\n\n"
             "3. Запусти конверсию:\n"
             "     python helpers/transcribe_mcp.py --raw <raw>.json --out <edit>/transcripts/<stem>.json\n\n"
-            "Если используешь старый MCP без _json — обрати внимание: pack_transcripts.py "
-            "не умеет работать с plain-text. Нужен патч TeleTranscribe MCP.\n\n"
-            "Полная спека патча — в PATCH_TELETRANSCRIBE_PROMPT.md."
+            "transcribe_file_json уже задеплоен в MCP и отдаёт word-timestamps — pack_transcripts.py "
+            "работает с этим JSON напрямую."
         )
         return
 

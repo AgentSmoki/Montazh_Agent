@@ -146,7 +146,7 @@ TT_DESCRIBE_INSTRUCTION = """
                Не более 30 слов, на русском."
 
    ⚠️ Если этого tool пока нет — нужен патч TT MCP.
-   Спецификация патча — в `PATCH_TT_DESCRIBE_IMAGE_PROMPT.md`.
+   Спецификация патча — в `docs/PATCH_TT_DESCRIBE_IMAGE_PROMPT.md`.
 
 2. Сохрани результат в `descriptions/<shot_id>.txt` (одна строка — описание).
 

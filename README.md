@@ -103,8 +103,7 @@ MIT (наследовано от [browser-use/video-use](https://github.com/brow
 ## Roadmap
 
 - ✅ MVP: highlight + multi-clip + audio-first + format-mix
-- ⏳ TeleTranscribe MCP патч (`transcribe_file_json` с word-timestamps) — отдельная сессия, см. [PATCH_TELETRANSCRIBE_PROMPT.md](PATCH_TELETRANSCRIBE_PROMPT.md)
+- ✅ TeleTranscribe MCP патч (`transcribe_file_json` с word-timestamps) — задеплоен в MCP
 - 📋 Streamlit/web UI поверх (когда выйдем в SaaS)
 - 📋 Lipsync для сгенерированных talking-heads (LatentSync / Sync.so)
 - 📋 C2PA watermarking (compliance EU AI Act)
-- 📋 `.clinerules/` 6-файловая структура (для Cline-совместимости)

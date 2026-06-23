@@ -119,6 +119,14 @@ LLM работает в основном на Layer 3-4 (читает packed.md,
 
 См. `install.md` для команд регистрации.
 
+## Мемы и музыка (skills проекта)
+
+- **`skills/meme-inserter/`** — вставка видео/картинок-мемов в кадр. В сценарии `[мем:🤯]` или `[мем: текст]`, или голосом «вставь мем про X». Источник KLIPY (`helpers/meme_fetch.py`, `helpers/parse_meme_cues.py`). Мем кладётся **по центру экрана** (не в угол). Кэш + manifest в `<edit>/memes/`.
+- **`skills/video-music/`** — фоновая музыка: генерация инструментала (`helpers/music_gen.py generate`) + ducking под голос (`music_gen.py duck`, sidechaincompress). Провайдеры: ElevenLabs Music (проще всего), Suno-gateways (sunoapi.org/acedata/apiframe), Fal.
+
+### ⚠️ API-ключи — ТОЛЬКО в `.env` (никогда в git-файлах)
+Ключи для KLIPY/Suno-gateways/ElevenLabs/Fal лежат в `.env` (он в `.gitignore`) + дубль в `~/.claude/env_secrets/montazh_agent.env`. **В CLAUDE.md/SKILL.md/EDL — только имена переменных**, не значения. `helpers/*` читают их из окружения/`.env` через `_load_env()`. Имена: `KLIPY_API_KEY`, `SUNOAPI_ORG_KEY`, `ACEDATA_SUNO_KEY`, `APIFRAME_KEY`, `ELEVENLABS_API_KEY`, `FAL_KEY`. Новый ключ — добавлять в `.env`, не в инструкции.
+
 ## Skills (используем глобальные)
 
 - **`prompt-caching-playbook`** — для оптимизации токенов: транскрипты ≥10K токенов идут с `cache_control` (90% off на читы; Claude Code в апреле 2026 переключил default TTL 1h → 5min, помни про это).
@@ -167,38 +175,64 @@ Montazh_Agent/
 ├── SKILL.md                       # системный промпт агента (читай FIRST)
 ├── README.md                      # quick-start
 ├── install.md                     # детали установки
-├── PATCH_TELETRANSCRIBE_PROMPT.md # инструкции для патча TT MCP (если ещё не задеплоен)
 ├── pyproject.toml
 ├── .env.example
 ├── .gitignore
 ├── LICENSE                        # MIT (upstream)
-├── helpers/
+├── docs/                          # доп. документация (не точки входа)
+│   ├── PATCH_TT_DESCRIBE_IMAGE_PROMPT.md  # спека патча describe_image для TT MCP (задеплоен)
+│   └── vlipsy_partnership_request.md      # черновик письма на API-доступ Vlipsy
+├── research/                      # исследовательские заметки по стеку
+│   ├── 03_research_stack.md       # обоснование lean-стека (Gemini Deep Research)
+│   ├── 04_vps_telegram_takopi.md
+│   └── 05_word_boundary_methodology_findings.md
+├── helpers/                       # ВЕСЬ исполняемый код (только .py)
 │   ├── transcribe_mcp.py          # обёртка TT MCP → Scribe-format JSON
 │   ├── inventory.py               # ffprobe всех источников
 │   ├── format_recommender.py      # 2-3 варианта формата вывода
 │   ├── pack_transcripts.py        # transcripts/*.json → packed.md (upstream)
 │   ├── scene_detect.py            # PySceneDetect
 │   ├── match_video_to_audio.py    # CLIP-матчинг для audio-first
+│   ├── clip_onnx.py               # ONNX-инференс CLIP (audio-first match)
+│   ├── analyze_reels.py           # эвристики анализа коротких видео
+│   ├── content_factory_presets.py # 8 пресетов форматов (контент-завод)
 │   ├── broll_generator.py         # инструкции для MCP B-roll
 │   ├── otio_export.py             # JSON-EDL → .otio / .fcpxml
 │   ├── timeline_view.py           # filmstrip + waveform PNG (upstream)
-│   ├── render.py                  # FFmpeg pipeline (upstream, 660 строк)
+│   ├── render.py                  # FFmpeg pipeline (upstream)
 │   ├── grade.py                   # color presets (upstream)
+│   │   # — word-boundary / editable-transcript стек:
+│   ├── build_editable_transcript.py   # JSON → редактируемый markdown-транскрипт
+│   ├── parse_editable_transcript.py   # обратно: правки → EDL-cuts
+│   ├── snap_to_word.py            # привязка cut'ов к границам слов (Hard Rule #6)
+│   ├── apply_padding.py           # padding 30-200ms на cut-edge (Hard Rule #7)
+│   ├── check_thought_boundaries.py    # проверка цельности мысли на стыке
+│   ├── detect_audio_spikes.py    # детект аудио-всплесков для чистых cut'ов
+│   ├── validate_edl.py           # валидатор EDL перед рендером
+│   ├── editor_sub_agent_brief.py # генератор brief'а для editor sub-agent
+│   │   # — мемы и музыка:
+│   ├── meme_fetch.py             # фетч мемов (KLIPY/Vlipsy)
+│   ├── parse_meme_cues.py        # парсинг [мем:...] cue'ов из сценария
+│   ├── music_gen.py              # генерация инструментала + ducking
 │   └── overlays/
 │       ├── pil_subs.py            # PIL-overlays (TikTok/YouTube/Reels)
 │       ├── manim_runner.py        # Manim CLI обёртка
 │       ├── remotion_runner.py     # Remotion CLI обёртка
 │       └── hyperframes_runner.py  # HyperFrames CLI обёртка
-├── skills/
-│   └── manim-video/               # references для Manim (upstream, 15 файлов)
+├── skills/                        # под-скиллы проекта
+│   ├── manim-video/               # references для Manim (upstream)
+│   ├── meme-inserter/             # вставка мемов в кадр
+│   └── video-music/               # фоновая музыка + ducking
+├── test_sessions/                 # тестовые монтажи (gitignored, кроме README+шаблона)
+├── videos_dir/                    # личные монтажи пользователя (gitignored целиком)
 └── static/                        # banner + svg (upstream)
 ```
 
 ## Связь с другими проектами
 
-- **TeleTranscribe** (`~/Documents/Razarabotka/TeleTranscribe/`) — мой собственный ASR-стек. Транскрипция всех речевых треков идёт через его MCP (`mcp_server.py`). См. `PATCH_TELETRANSCRIBE_PROMPT.md` если MCP ещё не умеет возвращать word-timestamps в JSON.
+- **TeleTranscribe** (`~/Documents/Razarabotka/TeleTranscribe/`) — мой собственный ASR-стек. Транскрипция всех речевых треков идёт через его MCP (`mcp_server.py`). MCP уже отдаёт word-timestamps через `transcribe_file_json` / `transcribe_url_json` (патч задеплоен). `docs/PATCH_TT_DESCRIBE_IMAGE_PROMPT.md` — спека отдельного патча `describe_image` для vision-кадров.
 - **Dev_Architect** (`~/Documents/Razarabotka/Dev_Architect/`) — research tool (когда нужно сравнить новые модели). Сейчас сломан, см. memory `project_research_tool_outdated`.
-- **Agent_Architect** (`~/Documents/Razarabotka/Agent_Architect/`) — образец структуры агента (CLAUDE.md, .clinerules, AGENTS.md).
+- **Agent_Architect** (`~/Documents/Razarabotka/Agent_Architect/`) — образец структуры агента (CLAUDE.md + AGENTS.md symlink).
 - **`browser-use/video-use`** — upstream, от которого форкнулись. Обновления:
   - `git remote add upstream https://github.com/browser-use/video-use` (не сделано по умолчанию — отдельный repo)
   - merge через cherry-pick конкретных коммитов helpers/render.py / helpers/grade.py.

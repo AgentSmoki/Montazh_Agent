@@ -184,13 +184,11 @@ claude
 
 ## Известные проблемы
 
-### TeleTranscribe MCP возвращает plain text без word-timestamps
+### Word-timestamps для Hard Rule #6 (never cut inside a word)
 
-Это **известное** ограничение текущей версии TT MCP. Hard Rule #6 (never cut inside a word) требует word-timestamps. Решение:
+✅ **Решено.** TT MCP отдаёт word-level JSON через `transcribe_file_json` / `transcribe_url_json` (`utterances[].words[]`) — патч задеплоен. `helpers/transcribe_mcp.py` конвертирует raw-ответ в Scribe-format.
 
-1. **Долгосрочное:** запустить отдельную сессию Claude Code в `~/Documents/Razarabotka/TeleTranscribe/` с инструкциями из `PATCH_TELETRANSCRIBE_PROMPT.md` — добавит новые tools `transcribe_file_json` / `transcribe_url_json` с полной JSON-структурой.
-
-2. **Временное:** агент работает в degraded mode — режет по utterance-boundaries с padding 200ms. Качество чуть хуже, но pipeline работает.
+Degraded fallback (если по какой-то причине доступен только plain-text MCP): агент режет по utterance-boundaries с padding 200ms — качество чуть хуже, но pipeline работает.
 
 ### 402 от MCP / нет кредитов
 
