@@ -95,6 +95,14 @@ _MONO = {
     "macos": ["Menlo.ttc", "SFNSMono.ttf", "Courier New.ttf"],
     "linux": ["DejaVuSansMono.ttf", "LiberationMono-Regular.ttf"],
 }
+# Цветные эмодзи: Apple = sbix-битмапы (PIL рисует только на строгих strike-размерах,
+# 160px есть всегда), Noto = CBDT-битмапы (тоже ок), Segoe = COLR-векторы —
+# Pillow их НЕ растеризует в цвете; для Windows Noto надо доустановить.
+_EMOJI = {
+    "macos": ["Apple Color Emoji.ttc"],
+    "linux": ["NotoColorEmoji.ttf", "NotoColorEmoji-Regular.ttf"],
+    "windows": ["NotoColorEmoji.ttf", "seguiemj.ttf"],
+}
 
 
 @functools.lru_cache(maxsize=64)
@@ -128,6 +136,12 @@ def find_bold_sans(extra: list[str] | None = None) -> Path | None:
 def find_mono(extra: list[str] | None = None) -> Path | None:
     """Путь к моноширинному шрифту под текущую ОС."""
     names = list(extra or []) + _MONO.get(os_name(), _MONO["linux"])
+    return _find_in_font_dirs(names)
+
+
+def find_emoji_font(extra: list[str] | None = None) -> Path | None:
+    """Путь к цветному эмодзи-шрифту под текущую ОС (или None — эмодзи-оверлеи недоступны)."""
+    names = list(extra or []) + _EMOJI.get(os_name(), _EMOJI["linux"])
     return _find_in_font_dirs(names)
 
 

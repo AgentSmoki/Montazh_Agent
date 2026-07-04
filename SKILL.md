@@ -244,7 +244,16 @@ ffprobe, python≥3.10, Pillow, шрифты, TT_API_KEY. ОС у пользов
 - **`overlays/hyperframes_runner.py`** — обёртка над `npx hyperframes render` для HTML/CSS/GSAP.
 - **`meme_fetch.py "<эмодзи|текст>" --edit-dir <edit>`** — поиск+скачивание мема (KLIPY clips/gifs) в `<edit>/memes/` + manifest. `--list` показать кандидатов. См. skill `meme-inserter`.
 - **`parse_meme_cues.py scenario.md --edit-dir <edit> --apply edl.json`** — парс `[мем:🤯 @T]` / `[мем: текст @T]` из сценария → overlays (мем по центру, `scale_w` 0.82). Без `@T` → unplaced (привязать вручную).
-- **`music_gen.py generate "<описание>" --duration N --out music.mp3`** — генерация инструментала (ElevenLabs/Suno-gateway/Fal). **`music_gen.py duck <video> <music> -o <out>`** — подмешать с ducking под голос. См. skill `video-music`.
+- **`music_gen.py generate "<описание>" --duration N --out music.mp3`** — генерация инструментала (ElevenLabs/Suno-gateway/Fal). **`music_gen.py duck <video> <music> -o <out>`** — подмешать с ducking под голос. **`music_gen.py bestwindow <music> --duration N`** — найти самое энергичное окно трека (ebur128, пропустить тихое интро). См. skill `video-music`.
+- **`emoji_overlay.py "⚖" --duration N --center x,y --out <edit>/animations/emoji/X.mov`** — эмодзи-акцент с pop-in анимацией (alpha qtrle MOV на весь кадр, position `topleft`). Появление — точно на слове-обозначении, тайминг по word-timestamps в output-времени. Только одиночные codepoint'ы (ZWJ не собираются). См. skill `emoji-accents`.
+
+**Quality-gates и review (заимствовано из OpenMontage, реализовано с нуля):**
+- **`delivery_promise.py <edl.json> --mode <режим>`** — гейт «обещание доставки»: обещали motion-led (audio-first/generative-only) → не отдать молча статику. Импорт: `validate_cuts(ranges, promise_type_for_mode(mode))`.
+- **`slideshow_risk.py <edl.json>`** — скорер монотонности/«анимированного PowerPoint» по 6 измерениям + детект generic/AI-фраз. Импорт: `score_edl(edl)`.
+- **`post_render_review.py <video> [--expect-duration N --expect-res WxH]`** — авто-санити финала: чёрные кадры, тишина/клиппинг, длительность/разрешение. Импорт: `review(video, expect=...)`. `--vision` отдаёт пути кадров для проверки через TT vision.
+- Все три вшиты в `render.py main()`: delivery-promise + slideshow-risk до рендера (мягкие предупреждения, флаги `--mode`, `--no-quality-gates`), post-render-review в конце (`--no-post-review`).
+- **`match_video_to_audio.py --diversity 0.3`** — MMR-диверсификация audio-first матчинга (соседние фразы не липнут к одному shot'у). `--diversity 0` = старое top-1.
+- **`overlays/pil_subs.py --corrections corr.json`** — словарь ASR-правок субтитров (напр. `{"отчаянная":"чайная"}`).
 
 Для каждой анимации создавай `edit/animations/slot_<id>/` через Bash и запускай sub-agent через Agent tool.
 
@@ -496,6 +505,14 @@ def ease_in_out_cubic(t):
 - `effect` — `pushin` для `screen_read` (Ken-Burns establish→деталь; render считает по длительности). Пусто = статичный кадр.
 - `transcript` — override stem транскрипта для preprocessed-источников (HOOK_vert→`IMG_3521`), чтобы snap/padding/thought-guard их защищали (Rule 6).
 - `src_offset` — сдвиг (сек) таймлайна файла относительно транскрипта, если файл обрезан с начала. Default 0.
+- `no_subs` — `true` → на этом range мои субтитры не строим (оставить оригинальные вшитые субтитры исходника, напр. на вступительной фразе).
+
+**Поля EDL верхнего уровня (субтитры):**
+- `subtitle_mode` — `"elegant"` → длинные строки (sentence case, рвать на `.!?`), для лиричного контента. Иначе bold-overlay (2 слова UPPERCASE).
+- `sub_chunk_max` — макс. слов в строке субтитра (elegant ~5-6, bold ~2).
+- `subtitle_style` — per-EDL force_style libass (шрифт/цвет/позиция), переопределяет глобальный `SUB_FORCE_STYLE`.
+
+**Бесшовные вставки (важно):** соседние фото/видео-вставки (overlays) ставить ВСТЫК с нахлёстом ~0.1с — НИКОГДА с зазором: щель 0.1-0.2с между двумя вставками или между хуком и вставкой даёт видимое мелькание базы. Одиночная вставка с базой до/после ≥0.3с — нормальный cutaway. Output-офсеты считать через snap+padding (как в `render.py`), а не по сырым таймкодам.
 
 **Перед рендером** `render.py` сам прогоняет: `validate_edl` (fail-fast на битый EDL/несуществующие файлы) → `snap_to_word` → `check_thought_boundaries` (warn) → `apply_padding`. Отдельно: `python helpers/validate_edl.py <edl>` и `python helpers/check_thought_boundaries.py <edl> --transcripts-dir <edit>/transcripts`.
 

@@ -160,6 +160,7 @@ LLM работает в основном на Layer 3-4 (читает packed.md,
 
 - **`skills/meme-inserter/`** — вставка видео/картинок-мемов в кадр. В сценарии `[мем:🤯]` или `[мем: текст]`, или голосом «вставь мем про X». Источник KLIPY (`helpers/meme_fetch.py`, `helpers/parse_meme_cues.py`). Мем кладётся **по центру экрана** (не в угол). Кэш + manifest в `<edit>/memes/`.
 - **`skills/video-music/`** — фоновая музыка: генерация инструментала (`helpers/music_gen.py generate`) + ducking под голос (`music_gen.py duck`, sidechaincompress). Провайдеры: ElevenLabs Music (проще всего), Suno-gateways (sunoapi.org/acedata/apiframe), Fal.
+- **`skills/emoji-accents/`** — эмодзи-акценты на словах-обозначениях («юрист» → ⚖, «внизу» → 👇): pop-in alpha-клипы через `helpers/emoji_overlay.py`, payoff-тайминг по word-timestamps. Шрифт — через `platform_paths.find_emoji_font()`.
 
 ### ⚠️ API-ключи — ТОЛЬКО в `.env` (никогда в git-файлах)
 Ключи для KLIPY/Suno-gateways/ElevenLabs/Fal лежат в `.env` (он в `.gitignore`) + дубль в `~/.claude/env_secrets/montazh_agent.env`. **В CLAUDE.md/SKILL.md/EDL — только имена переменных**, не значения. `helpers/*` читают их из окружения/`.env` через `_load_env()`. Имена: `KLIPY_API_KEY`, `SUNOAPI_ORG_KEY`, `ACEDATA_SUNO_KEY`, `APIFRAME_KEY`, `ELEVENLABS_API_KEY`, `FAL_KEY`. Новый ключ — добавлять в `.env`, не в инструкции.
@@ -250,6 +251,10 @@ Montazh_Agent/
 │   ├── detect_audio_spikes.py    # детект аудио-всплесков для чистых cut'ов
 │   ├── validate_edl.py           # валидатор EDL перед рендером
 │   ├── editor_sub_agent_brief.py # генератор brief'а для editor sub-agent
+│   │   # — quality-gates (заимствовано из OpenMontage, реализовано с нуля):
+│   ├── delivery_promise.py       # гейт «обещали motion-led → не отдать статику»
+│   ├── slideshow_risk.py         # скорер монотонности/«анимированного PowerPoint»
+│   ├── post_render_review.py     # авто-санити финала (чёрные кадры/тишина/длительность)
 │   │   # — мемы и музыка:
 │   ├── meme_fetch.py             # фетч мемов (KLIPY/Vlipsy)
 │   ├── parse_meme_cues.py        # парсинг [мем:...] cue'ов из сценария
@@ -276,6 +281,18 @@ Montazh_Agent/
 - **`browser-use/video-use`** — upstream, от которого форкнулись. Обновления:
   - `git remote add upstream https://github.com/browser-use/video-use` (не сделано по умолчанию — отдельный repo)
   - merge через cherry-pick конкретных коммитов helpers/render.py / helpers/grade.py.
+
+## Quality-gates (заимствовано из OpenMontage)
+
+Из [OpenMontage](https://github.com/calesthio/OpenMontage) (лицензия **AGPLv3**) взяты 5 идей и реализованы **с нуля по описанию** (код их репозитория не копировался — AGPL не загрязняет нашу базу):
+
+1. **MMR-диверсификация** в `match_video_to_audio.py` (`--diversity`, default 0.3) — соседние фразы не липнут к одному shot'у.
+2. **`delivery_promise.py`** — гейт соответствия режима результату (motion-led не падает молча в статику). Вшит в `render.py` (`--mode`, мягкое предупреждение).
+3. **`slideshow_risk.py`** — скорер монотонности по 6 измерениям + детект generic/AI-фраз. Вшит в `render.py`.
+4. **`post_render_review.py`** — авто-санити финала (чёрные кадры / тишина / клиппинг / длительность). Вшит в конец `render.py` (`--no-post-review`).
+5. **Мелочи:** `music_gen.py bestwindow` (energy-offset по ebur128) + `pil_subs.py --corrections` (словарь ASR-правок субтитров).
+
+Новые флаги `render.py`: `--mode <режим>`, `--no-quality-gates`, `--no-post-review`. Гейты мягкие — предупреждают, не блокируют рендер.
 
 ## graphify
 
