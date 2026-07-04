@@ -19,6 +19,8 @@ Note: для финальных burn-in субтитров использует�
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -56,6 +58,37 @@ PRESETS = {
         "animate": "fade_pulse",
     },
 }
+
+
+def _match_case(src: str, repl: str) -> str:
+    """Перенести регистр исходного слова на замену, чтобы вёрстка не «прыгала».
+    UPPER → UPPER, Title → Title, иначе замена как есть (нижний регистр в словаре)."""
+    if src.isupper():
+        return repl.upper()
+    if src[:1].isupper() and src[1:].islower():
+        return repl[:1].upper() + repl[1:]
+    return repl
+
+
+def apply_corrections(text: str, corrections: dict[str, str] | None) -> str:
+    """Заменить ASR-ошибки по словарю {неправильно: правильно}.
+
+    Замена по целым словам, регистронезависимо по ключу; регистр исходного
+    слова переносится на замену (UPPER/Title сохраняются). Без словаря —
+    текст возвращается как есть."""
+    if not corrections:
+        return text
+    result = text
+    for wrong, right in corrections.items():
+        if not wrong:
+            continue
+        # \b не дружит с кириллицей в некоторых сборках re → используем lookaround
+        # по «не-словесным» границам через \w (с re.UNICODE по умолчанию в py3).
+        pattern = re.compile(
+            r"(?<!\w)" + re.escape(wrong) + r"(?!\w)", re.IGNORECASE | re.UNICODE
+        )
+        result = pattern.sub(lambda m: _match_case(m.group(0), right), result)
+    return result
 
 
 def find_font(font_name: str, size: int):
@@ -159,6 +192,8 @@ def main() -> None:
     ap.add_argument("--resolution", default="1080x1920", help="WxH (default 1080x1920 вертикаль)")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--out", type=Path, required=True, help="Путь к выходному MOV (с альфой)")
+    ap.add_argument("--corrections", type=Path, default=None,
+                    help="JSON-словарь ASR-корректировок {\"неправильно\":\"правильно\"}")
     args = ap.parse_args()
 
     try:
@@ -166,12 +201,25 @@ def main() -> None:
     except Exception:
         sys.exit(f"Неверное разрешение: {args.resolution}")
 
+    corrections = None
+    if args.corrections:
+        if not args.corrections.exists():
+            sys.exit(f"Файл корректировок не найден: {args.corrections}")
+        try:
+            corrections = json.loads(args.corrections.read_text(encoding="utf-8"))
+        except Exception as e:
+            sys.exit(f"Не удалось прочитать JSON корректировок: {e}")
+        if not isinstance(corrections, dict):
+            sys.exit("Файл корректировок должен быть JSON-объектом {слово: замена}")
+
+    text = apply_corrections(args.text, corrections)
+
     preset = PRESETS[args.preset]
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        make_png_sequence(args.text, args.duration, (w, h), preset, args.fps, tmp_path)
+        make_png_sequence(text, args.duration, (w, h), preset, args.fps, tmp_path)
         png_seq_to_mp4(tmp_path, args.fps, args.out)
 
     print(f"✓ {args.out}  ({args.duration:.1f}s @ {args.fps}fps, preset={args.preset})")

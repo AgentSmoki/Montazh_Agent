@@ -149,19 +149,28 @@ def is_hdr_source(video: Path) -> bool:
 
 
 def is_portrait_source(video: Path) -> bool:
-    """Return True if the video's height > width (portrait / vertical)."""
+    """Return True if the video displays taller than wide (portrait / vertical).
+
+    Портрет определяется по ОТОБРАЖАЕМЫМ размерам: iPhone пишет .MOV с coded
+    1920×1080 + rotation в display-matrix side data. ffmpeg при декоде
+    автоповорачивает кадры, поэтому coded-размеры без учёта rotation дают
+    ложный «ландшафт» → cover-crop уносит портретный кадр в 1920×1080.
+    """
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height",
-             "-of", "csv=p=0", str(video)],
+             "-show_entries", "stream=width,height:stream_side_data=rotation",
+             "-of", "json", str(video)],
             capture_output=True, text=True, check=True,
         )
-        # csv=p=0 может вернуть хвостовую запятую ("1080,1920,") → пустые
-        # токены ломали map(int) и роняли функцию в except → портретные
-        # iPhone-клипы ошибочно считались ландшафтом. Берём первые два числа.
-        nums = [int(p) for p in out.stdout.strip().split(",") if p.strip()]
-        w, h = nums[0], nums[1]
+        stream = json.loads(out.stdout)["streams"][0]
+        w, h = int(stream["width"]), int(stream["height"])
+        rotation = 0
+        for sd in stream.get("side_data_list") or []:
+            if "rotation" in sd:
+                rotation = int(sd["rotation"])
+        if abs(rotation) % 180 == 90:
+            w, h = h, w
         return h > w
     except Exception:
         return False
@@ -396,13 +405,18 @@ def _words_in_range(transcript: dict, t_start: float, t_end: float) -> list[dict
     return out
 
 
-def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
+def build_master_srt(edl: dict, edit_dir: Path, out_path: Path,
+                     chunk_max: int = 2, uppercase: bool = True,
+                     sentence_break_only: bool = False) -> None:
     """Build an output-timeline SRT from per-source transcripts.
 
-    - 2-word chunks (break on any punctuation in between)
-    - UPPERCASE text
+    - chunk_max слов в строке (default 2 — bold-overlay стиль)
+    - uppercase — ВЕРХНИЙ регистр (default True для bold-overlay)
+    - sentence_break_only — рвать только на .!? (не на запятых) — для
+      natural-sentence/«элегантного» стиля длинными строками
     - Output times computed as word.start - segment_start + segment_offset
     """
+    break_chars = set(".!?") if sentence_break_only else PUNCT_BREAK
     transcripts_dir = edit_dir / "transcripts"
     sources = edl["sources"]
 
@@ -430,6 +444,12 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
         seg_duration = seg_end - seg_start
         offset = float(r.get("src_offset", 0.0))
 
+        # range с "no_subs": true — субтитры не строим (например, на вступительной
+        # фразе оставляем оригинальные вшитые субтитры исходника)
+        if r.get("no_subs"):
+            seg_offset += seg_duration
+            continue
+
         stem = resolve_transcript_stem(r, sources)
         tr_path = transcripts_dir / f"{stem}.json"
         if not tr_path.exists():
@@ -449,9 +469,9 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
             if not text:
                 continue
             current.append(w)
-            # Break if the current text ends in punctuation or we hit 2 words
-            ends_in_punct = bool(text) and text[-1] in PUNCT_BREAK
-            if len(current) >= 2 or ends_in_punct:
+            # Break if the current text ends in punctuation or we hit chunk_max words
+            ends_in_punct = bool(text) and text[-1] in break_chars
+            if len(current) >= chunk_max or ends_in_punct:
                 chunks.append(current)
                 current = []
         if current:
@@ -470,9 +490,10 @@ def build_master_srt(edl: dict, edit_dir: Path, out_path: Path) -> None:
                 out_end = out_start + 0.4
             text = " ".join((w.get("text") or "").strip() for w in chunk)
             text = re.sub(r"\s+", " ", text).strip()
-            # Strip trailing punctuation for cleaner uppercase look
+            # Strip trailing punctuation for cleaner look
             text = text.rstrip(",;:")
-            text = text.upper()
+            if uppercase:
+                text = text.upper()
             entries.append((out_start, out_end, text))
 
         seg_offset += seg_duration
@@ -636,6 +657,19 @@ def _strip_srt_windows(srt_path: Path, windows: list[tuple[float, float]]) -> Pa
     return out_path
 
 
+def _make_scrim_png(path: Path, w: int, scrim_h: int, max_alpha: int) -> None:
+    """Полупрозрачный чёрный градиент (прозрачный сверху → max_alpha снизу).
+    Кладётся на низ кадра под субтитры, чтобы золотой текст не сливался с фоном."""
+    if path.exists():
+        return
+    from PIL import Image  # Pillow есть (env_doctor проверяет)
+    col = Image.new("RGBA", (1, scrim_h), (0, 0, 0, 0))
+    for y in range(scrim_h):
+        a = int(max_alpha * (y / max(1, scrim_h - 1)) ** 1.4)
+        col.putpixel((0, y), (0, 0, 0, a))
+    col.resize((w, scrim_h)).save(path)
+
+
 def build_final_composite(
     base_path: Path,
     overlays: list[dict],
@@ -644,6 +678,9 @@ def build_final_composite(
     edit_dir: Path,
     canvas_w: int = 1080,
     canvas_h: int = 1920,
+    sub_style: str = SUB_FORCE_STYLE,
+    bottom_scrim: bool = False,
+    scrim_alpha: int = 190,
 ) -> None:
     """Final pass: base → overlays (PTS-shifted) → subtitles LAST → out.
 
@@ -673,6 +710,17 @@ def build_final_composite(
     for ov in overlays:
         ov_path = resolve_path(ov["file"], edit_dir)
         inputs += ["-i", str(ov_path)]
+
+    # bottom-scrim: тёмный градиент снизу под субтитры (чтобы золото не сливалось)
+    scrim_on = bool(bottom_scrim) and has_subs
+    scrim_idx = scrim_y = None
+    if scrim_on:
+        scrim_h = int(canvas_h * 0.40)
+        scrim_y = canvas_h - scrim_h
+        scrim_path = edit_dir / f".scrim_{canvas_w}x{scrim_h}_{scrim_alpha}.png"
+        _make_scrim_png(scrim_path, canvas_w, scrim_h, scrim_alpha)
+        scrim_idx = len(overlays) + 1
+        inputs += ["-i", str(scrim_path)]
 
     filter_parts: list[str] = []
     # PTS-shift (+ optional scale) every overlay so its frame 0 lands at start_in_output
@@ -709,6 +757,11 @@ def build_final_composite(
         )
         current = next_label
 
+    # bottom-scrim поверх базы+оверлеев, НО под субтитрами
+    if scrim_on:
+        filter_parts.append(f"{current}[{scrim_idx}:v]overlay=0:{scrim_y}[scr]")
+        current = "[scr]"
+
     # Subtitles LAST — Rule 1. Окна оверлеев с mute_subs: субтитры в эти
     # интервалы не показываем (мем-картинку не перекрывать подписью).
     # subtitles-фильтр НЕ поддерживает timeline enable → удаляем cue'и из SRT.
@@ -721,7 +774,7 @@ def build_final_composite(
             srt_to_use = _strip_srt_windows(subtitles_path, mute_windows)
         subs_abs = str(srt_to_use.resolve()).replace(":", r"\:").replace("'", r"\'")
         filter_parts.append(
-            f"{current}subtitles='{subs_abs}':force_style='{SUB_FORCE_STYLE}'[outv]"
+            f"{current}subtitles='{subs_abs}':force_style='{sub_style}'[outv]"
         )
         out_label = "[outv]"
     else:
@@ -799,6 +852,23 @@ def main() -> None:
         action="store_true",
         help="Skip audio-spike detection post-pass",
     )
+    # Quality-gates (заимствовано из OpenMontage, реализовано с нуля)
+    ap.add_argument(
+        "--mode",
+        default=None,
+        help="Режим монтажа (highlight/multi-clip/audio-first/format-mix/generative-only/"
+             "content-factory) — для delivery-promise гейта. Если не задан, гейт пропускается.",
+    )
+    ap.add_argument(
+        "--no-quality-gates",
+        action="store_true",
+        help="Skip pre-render quality gates (delivery-promise + slideshow-risk)",
+    )
+    ap.add_argument(
+        "--no-post-review",
+        action="store_true",
+        help="Skip post-render sanity review (чёрные кадры / тишина / длительность)",
+    )
     args = ap.parse_args()
 
     edl_path = args.edl.resolve()
@@ -823,6 +893,42 @@ def main() -> None:
             sys.exit(1)
     except ImportError as e:
         print(f"warning: validate_edl недоступен ({e})")
+
+    # === Quality gates (мягкие, не блокируют — заимствовано из OpenMontage) ===
+    if not args.no_quality_gates:
+        # delivery-promise: обещали motion-led → не отдать молча статику
+        if args.mode:
+            try:
+                from delivery_promise import validate_cuts, promise_type_for_mode  # type: ignore
+                v = validate_cuts(edl.get("ranges", []), promise_type_for_mode(args.mode))
+                print(f"\n=== Delivery-promise ({v['promise_type']}, "
+                      f"motion={v['motion_ratio']:.0%}) ===")
+                if v["ok"]:
+                    print("✓ обещание режима выполнено")
+                else:
+                    for vio in v["violations"]:
+                        print(f"⚠️  {vio}")
+                    if v.get("requires_override"):
+                        print("   → это предупреждение, не блок. Подтверди осознанно или "
+                              "добавь движение/B-roll.")
+            except ImportError as e:
+                print(f"warning: delivery_promise недоступен ({e})")
+            except Exception as e:
+                print(f"warning: delivery_promise упал ({e})")
+        # slideshow-risk: анти-«анимированный PowerPoint»
+        try:
+            from slideshow_risk import score_edl  # type: ignore
+            rep = score_edl(edl)
+            print(f"\n=== Slideshow-risk (avg={rep['average']:.1f}, {rep['verdict']}) ===")
+            if rep["verdict"] == "strong":
+                print("✓ раскладка разнообразна")
+            else:
+                for note in rep["notes"]:
+                    print(f"⚠️  {note}")
+        except ImportError as e:
+            print(f"warning: slideshow_risk недоступен ({e})")
+        except Exception as e:
+            print(f"warning: slideshow_risk упал ({e})")
 
     # === Word-boundary safety pre-pass ===
     transcripts_dir = edit_dir / "transcripts"
@@ -880,7 +986,15 @@ def main() -> None:
     if not args.no_subtitles:
         if args.build_subtitles:
             subs_path = edit_dir / "master.srt"
-            build_master_srt(edl, edit_dir, subs_path)
+            # «elegant» режим субтитров: длинные строки, sentence case, рвать на .!?
+            if str(edl.get("subtitle_mode", "")).lower() == "elegant":
+                build_master_srt(edl, edit_dir, subs_path,
+                                 chunk_max=int(edl.get("sub_chunk_max", 6)),
+                                 uppercase=False, sentence_break_only=True)
+            else:
+                build_master_srt(edl, edit_dir, subs_path,
+                                 chunk_max=int(edl.get("sub_chunk_max", 2)),
+                                 uppercase=bool(edl.get("sub_uppercase", True)))
         elif edl.get("subtitles"):
             subs_path = resolve_path(edl["subtitles"], edit_dir)
             if not subs_path.exists():
@@ -895,15 +1009,22 @@ def main() -> None:
         cw, ch = (int(x) for x in res.split("x")[:2])
     except Exception:
         cw, ch = 1080, 1920
+    # стиль субтитров можно переопределить per-EDL (другой бренд → другой шрифт),
+    # не трогая глобальный SUB_FORCE_STYLE остальных проектов.
+    sub_style = edl.get("subtitle_style") or SUB_FORCE_STYLE
+    scrim = bool(edl.get("bottom_scrim"))
+    scrim_alpha = int(edl.get("scrim_alpha", 190))
     if args.no_loudnorm:
         # Composite directly to final output
         build_final_composite(base_path, overlays, subs_path, out_path, edit_dir,
-                              canvas_w=cw, canvas_h=ch)
+                              canvas_w=cw, canvas_h=ch, sub_style=sub_style,
+                              bottom_scrim=scrim, scrim_alpha=scrim_alpha)
     else:
         # Composite to a temp file, then run loudnorm → final output
         tmp_composite = out_path.with_suffix(".prenorm.mp4")
         build_final_composite(base_path, overlays, subs_path, tmp_composite, edit_dir,
-                              canvas_w=cw, canvas_h=ch)
+                              canvas_w=cw, canvas_h=ch, sub_style=sub_style,
+                              bottom_scrim=scrim, scrim_alpha=scrim_alpha)
         print("loudness normalization → social-ready (-14 LUFS / -1 dBTP / LRA 11)")
         apply_loudnorm_two_pass(tmp_composite, out_path, preview=args.draft)
 
@@ -926,6 +1047,29 @@ def main() -> None:
         except Exception as e:
             print(f"warning: spike detection упало ({e})")
         tmp_composite.unlink(missing_ok=True)
+
+    # === Post-render self-review (заимствовано из OpenMontage) ===
+    if not args.no_post_review and out_path.exists():
+        try:
+            import post_render_review as prr  # type: ignore
+            expect = {"duration": float(edl["total_duration_s"])} if edl.get("total_duration_s") else {}
+            try:
+                cw2, ch2 = (int(x) for x in str(edl.get("resolution", "1080x1920"))
+                            .lower().replace("х", "x").split("x")[:2])
+                expect["res"] = (cw2, ch2)
+            except Exception:
+                pass
+            print("\n=== Post-render review ===")
+            report = prr.review(out_path, expect=expect or None)
+            if report["ok"]:
+                print("✓ рендер чистый (кадры/аудио/длительность ок)")
+            else:
+                for p in report["problems"]:
+                    print(f"⚠️  {p}")
+        except ImportError as e:
+            print(f"warning: post_render_review недоступен ({e})")
+        except Exception as e:
+            print(f"warning: post_render_review упал ({e})")
 
     size_mb = out_path.stat().st_size / (1024 * 1024)
     print(f"\ndone: {out_path} ({size_mb:.1f} MB)")

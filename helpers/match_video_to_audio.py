@@ -250,6 +250,83 @@ def tt_describe_backend_judge(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MMR-диверсификация (чистый numpy, общая для всех CLIP-backend'ов)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def diversify_matches(
+    sims,
+    shot_embs,
+    diversity: float = 0.3,
+    used_penalty: float = 0.05,
+):
+    """Выбор shot'а для одной фразы по Maximal Marginal Relevance (MMR).
+
+    Задача — убрать визуально-избыточных соседей в EDL: при наивном top-1 по
+    косинусу один и тот же кадр прилипает к нескольким соседним фразам, потому
+    что релевантность считается без оглядки на то, что уже стоит рядом. MMR
+    добавляет штраф за похожесть кандидата на уже выбранные кадры.
+
+    Реализовано с нуля по описанию метода (идея из AGPL-проекта OpenMontage,
+    код не заимствован). Прямо обслуживает Hard Rule #14 (CLIP-continuity):
+    держит соседние клипы достаточно разными по содержанию, чтобы раскладка
+    не выглядела как один повторяющийся кадр, но при этом релевантными фразе.
+
+    Формула на каждом шаге максимизируется по кандидату c:
+        score(c) = (1 - λ)·sim(c, query) − λ·max_{p ∈ picked} sim(c, p)
+    где
+        λ        = diversity (0 → чистый top-1 по релевантности),
+        sim(c, query) — косинус фразы и кадра (приходит в `sims`),
+        sim(c, p)     — косинус между кадрами (из их CLIP-эмбеддингов).
+
+    Эта функция выбирает ОДИН лучший кадр под текущую фразу с учётом уже
+    выбранных под соседние фразы (генератор вызывает её в цикле, накапливая
+    `picked`/`used`). Чтобы один кадр не повторялся подряд, уже использованные
+    индексы дополнительно штрафуются `used_penalty` за каждое прошлое
+    использование (обратная совместимость со старым `used_count`-штрафом).
+
+    Args:
+        sims:        np.ndarray (N,) — косинус каждого shot'а с эмбеддингом фразы.
+                     Кадры считаем нормированными, поэтому это уже cos-similarity.
+        shot_embs:   np.ndarray (N, D) — нормированные CLIP-эмбеддинги кадров.
+        diversity:   λ ∈ [0, 1]. 0 = старое поведение top-1 (без диверсификации).
+        used_penalty: штраф за каждое прошлое использование кадра.
+
+    Returns:
+        Замыкание-выборщик: pick(picked_idx, used_count) -> best_idx.
+        `picked_idx`  — list[int] индексов кадров, выбранных для соседних фраз.
+        `used_count`  — list[int] счётчик использований каждого кадра.
+    """
+    import numpy as np
+
+    sims = np.asarray(sims, dtype=np.float64)
+    shot_embs = np.asarray(shot_embs, dtype=np.float64)
+    n = sims.shape[0]
+
+    def pick(picked_idx: list[int], used_count: list[int]) -> int:
+        # База — релевантность фразе, взвешенная (1 − λ).
+        relevance = (1.0 - diversity) * sims
+
+        # Штраф за повторное использование кадра (анти-прилипание подряд).
+        if used_penalty and used_count is not None:
+            relevance = relevance - used_penalty * np.asarray(used_count, dtype=np.float64)
+
+        # MMR-штраф: похожесть на уже выбранные соседние кадры.
+        if diversity > 0.0 and picked_idx:
+            # (k, D) @ (D, N) → (k, N): косинусы каждого выбранного со всеми кадрами.
+            picked_embs = shot_embs[picked_idx]            # (k, D)
+            redundancy = picked_embs @ shot_embs.T          # (k, N)
+            max_redundancy = redundancy.max(axis=0)         # (N,) худший (самый похожий) сосед
+            scores = relevance - diversity * max_redundancy
+        else:
+            scores = relevance
+
+        return int(np.argmax(scores))
+
+    pick.n = n  # для отладки
+    return pick
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Backend 2: CLIP через PyTorch (legacy fallback)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -258,8 +335,14 @@ def clip_pytorch_backend(
     shots: list[dict],
     cache_dir: Path,
     out_path: Path,
+    diversity: float = 0.3,
 ) -> None:
-    """sentence-transformers + torch + CLIP-ViT-B-32. Тяжёлый, медленный путь."""
+    """sentence-transformers + torch + CLIP-ViT-B-32. Тяжёлый, медленный путь.
+
+    `diversity` (λ) включает MMR-диверсификацию через `diversify_matches`, чтобы
+    соседние фразы не получали один и тот же кадр (Hard Rule #14, CLIP-continuity).
+    `diversity=0` → старое поведение top-1 по косинусу.
+    """
     try:
         from sentence_transformers import SentenceTransformer
         import numpy as np
@@ -269,6 +352,8 @@ def clip_pytorch_backend(
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     print(f"Backend: clip-pytorch (Intel CPU — медленно, ~40-50с на 50 shots)")
+    if diversity > 0:
+        print(f"MMR-диверсификация: λ={diversity} (соседние кадры разнообразятся)")
     model = SentenceTransformer("sentence-transformers/clip-ViT-B-32")
 
     # Эмбеддинги картинок (с кешем)
@@ -283,16 +368,20 @@ def clip_pytorch_backend(
             cache_file.write_text(json.dumps({"emb": emb}))
         shot_embs.append(emb)
 
-    shot_embs = np.array(shot_embs)  # (N, 512)
+    shot_embs = np.array(shot_embs)  # (N, 512), нормированы (normalize_embeddings=True)
 
     edl_spans: list[dict] = []
     used_count = [0] * len(shots)
+    picked_idx: list[int] = []  # кадры, выбранные под соседние фразы (для MMR)
     for phrase in phrases:
         text_emb = model.encode(phrase["text"], convert_to_numpy=True, normalize_embeddings=True)
         sims = shot_embs @ text_emb
-        adjusted = sims - 0.05 * np.array(used_count)
-        best_idx = int(np.argmax(adjusted))
+
+        # MMR-выбор кадра с учётом релевантности + непохожести на соседей.
+        pick = diversify_matches(sims, shot_embs, diversity=diversity, used_penalty=0.05)
+        best_idx = pick(picked_idx, used_count)
         used_count[best_idx] += 1
+        picked_idx.append(best_idx)
 
         shot = shots[best_idx]
         phrase_dur = phrase["end"] - phrase["start"]
@@ -329,8 +418,13 @@ def clip_onnx_backend(
     shots: list[dict],
     cache_dir: Path,
     out_path: Path,
+    diversity: float = 0.3,
 ) -> None:
-    """ONNX Runtime CLIP — без PyTorch, в 1.5× быстрее на CPU."""
+    """ONNX Runtime CLIP — без PyTorch, в 1.5× быстрее на CPU.
+
+    Когда заработает, использует ту же `diversify_matches` (MMR), что и
+    clip-pytorch backend — Hard Rule #14 (CLIP-continuity).
+    """
     try:
         from clip_onnx import CLIPOnnx  # type: ignore
     except ImportError:
@@ -365,6 +459,10 @@ def main() -> None:
                     help="Backend для матчинга (default: tt-describe — lean)")
     ap.add_argument("--judge-only", action="store_true",
                     help="(tt-describe) подготовить _judge_input.json без новых MCP-вызовов")
+    ap.add_argument("--diversity", type=float, default=0.3,
+                    help="λ для MMR-диверсификации (clip-*): 0 = старое top-1 "
+                         "поведение, 0.3 = умеренно разнообразить соседние кадры, "
+                         "ближе к 1 = сильнее избегать повторов (default: 0.3)")
     ap.add_argument("--cache-dir", type=Path, default=None,
                     help="Папка для кеша (default: <out.parent>/match_cache/)")
     args = ap.parse_args()
@@ -377,6 +475,8 @@ def main() -> None:
         sys.exit(f"транскрипт не найден: {transcript_path}")
     if not inv_path.exists():
         sys.exit(f"inventory не найден: {inv_path}")
+    if not 0.0 <= args.diversity <= 1.0:
+        sys.exit(f"--diversity должен быть в диапазоне [0, 1], получено: {args.diversity}")
 
     cache_dir = args.cache_dir or out_path.parent / "match_cache"
     inventory = json.loads(inv_path.read_text())
@@ -400,9 +500,11 @@ def main() -> None:
             if not json.loads(pending_path.read_text()):
                 tt_describe_backend_judge(phrases, shots, descriptions_dir, out_path)
     elif args.backend == "clip-pytorch":
-        clip_pytorch_backend(phrases, shots, cache_dir / "clip_embs", out_path)
+        clip_pytorch_backend(phrases, shots, cache_dir / "clip_embs", out_path,
+                             diversity=args.diversity)
     elif args.backend == "clip-onnx":
-        clip_onnx_backend(phrases, shots, cache_dir / "onnx_embs", out_path)
+        clip_onnx_backend(phrases, shots, cache_dir / "onnx_embs", out_path,
+                          diversity=args.diversity)
 
 
 if __name__ == "__main__":
