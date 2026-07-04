@@ -1,6 +1,6 @@
 # Montazh Agent 🎬
 
-**A Claude Code video-editing agent with 5 skills — memes, images, emoji accents, and music.**
+**A Claude Code video-editing agent running on 10 skills — memes, images, emoji accents, and music included.**
 
 Talk to it like you'd talk to an editor: *"cut a reel out of these clips"* — it inventories your footage, transcribes speech with word-level timestamps, proposes an editing strategy, waits for your approval, then cuts, grades, overlays, subtitles, and renders. Iterate in plain language; nothing is re-transcribed or re-paid twice.
 
@@ -21,7 +21,9 @@ Forked from [browser-use/video-use](https://github.com/browser-use/video-use) an
 | ✅ **Quality gates** | Delivery-promise gate, slideshow-risk scorer, post-render sanity review (black frames / silence / duration drift), and a 3-pass self-eval before you ever see a preview. |
 | 🔁 **Recoverable state** | Every edit saved as JSON EDL **and** OpenTimelineIO (`.otio`, optional `.fcpxml`) — take the cut into DaVinci Resolve or Final Cut any time. |
 
-## The 5 skills
+## The 10 skills
+
+**5 bundled in this repo:**
 
 | Skill | What it adds |
 |---|---|
@@ -30,6 +32,16 @@ Forked from [browser-use/video-use](https://github.com/browser-use/video-use) an
 | [`skills/emoji-accents`](skills/emoji-accents/SKILL.md) | Pop-in emoji overlays timed to spoken words |
 | [`skills/video-music`](skills/video-music/SKILL.md) | Background music generation + voice ducking |
 | [`skills/manim-video`](skills/manim-video/SKILL.md) | Math / diagram animations via Manim |
+
+**5 companion Claude Code workflow skills it's built to run with** (wired into [CLAUDE.md](CLAUDE.md); the agent works without them, but they raise the floor):
+
+| Skill | Role in the pipeline |
+|---|---|
+| `verification-before-completion` | Never says "done" before render, duration and self-eval checks pass |
+| `systematic-debugging` | Root-cause analysis before any FFmpeg / PIL / Manim fix |
+| `writing-plans` | Detailed plan before non-trivial features (e.g. lipsync support) |
+| `brainstorming` | Requirements dialogue before big architectural decisions |
+| `prompt-caching-playbook` | `cache_control` on 10K+-token transcripts — ~90% off repeat reads |
 
 ## Editing modes
 
