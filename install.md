@@ -85,7 +85,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-**Где взять `TT_API_KEY`:** в TeleTranscribe админке (см. `~/Documents/Razarabotka/TeleTranscribe/CLAUDE.md`) или через telegram-бота `/api`.
+**Где взять `TT_API_KEY`:** в telegram-боте [@TeleTranscribe_bot](https://t.me/TeleTranscribe_bot) — команда `/api`. Там же выдаётся MCP-сервер для подключения транскрибатора.
 
 ### 6. Регистрация skill в Claude Code
 
@@ -101,10 +101,12 @@ ls -la ~/.claude/skills/montazh-agent
 
 #### TeleTranscribe (обязательно)
 
+MCP-сервер и API-ключ выдаёт бот [@TeleTranscribe_bot](https://t.me/TeleTranscribe_bot) (команда `/api`). Регистрация:
+
 ```bash
 claude mcp add teletranscribe \
-  python3 /Users/admin/Documents/Razarabotka/TeleTranscribe/services/telegram-bot/mcp_server.py \
-  -e TT_API_BASE_URL=http://localhost:8000 \
+  python3 <путь_к_mcp_server.py_из_бота> \
+  -e TT_API_BASE_URL=<url_из_бота> \
   -e TT_API_KEY=$(grep ^TT_API_KEY .env | cut -d= -f2)
 ```
 

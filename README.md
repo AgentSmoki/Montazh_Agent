@@ -91,7 +91,7 @@ claude
 # > cut one reel out of these three clips, follow scenario.md
 ```
 
-**Requirements:** [Claude Code](https://claude.com/claude-code) · ffmpeg/ffprobe · Python ≥ 3.10 · an ASR MCP with word-level timestamps (built for the author's TeleTranscribe stack; any verbatim word-level ASR adapts in `helpers/transcribe_mcp.py`) · optional MCPs for B-roll (Higgsfield / Fal), TTS (ElevenLabs), music.
+**Requirements:** [Claude Code](https://claude.com/claude-code) · ffmpeg/ffprobe · Python ≥ 3.10 · an ASR MCP with word-level timestamps — connect the TeleTranscribe transcriber via MCP here: **[@TeleTranscribe_bot](https://t.me/TeleTranscribe_bot)** (any other verbatim word-level ASR adapts in `helpers/transcribe_mcp.py`) · optional MCPs for B-roll (Higgsfield / Fal), TTS (ElevenLabs), music.
 
 Runs on **macOS / Windows / Linux** — OS detection, font paths, and shell quirks are abstracted in `helpers/platform_paths.py` (`env_doctor.py` will tell you what's missing and how to install it on your OS).
 
@@ -112,6 +112,10 @@ Real production example: two vertical reels cut from raw phone footage + screen 
 
 - [browser-use/video-use](https://github.com/browser-use/video-use) — the upstream this project forked from (MIT).
 - [OpenMontage](https://github.com/calesthio/OpenMontage) — inspired the quality-gate ideas (delivery promise, slideshow risk, post-render review); reimplemented from scratch, no AGPL code included.
+
+## Contact
+
+Questions, setup help, ideas — **[@Bogman108](https://t.me/Bogman108)** on Telegram.
 
 ## License
 
