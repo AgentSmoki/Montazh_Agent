@@ -20,7 +20,7 @@ dependencies = [
     "pillow>=10.0",
     "numpy>=1.24",
     # EDL формат (lossless interchange, экспорт в FCPXML / Resolve / AAF)
-    "OpenTimelineIO>=0.17",
+    "opentimelineio>=0.17",
     # Scene-detection. opencv-python-headless: -200 МБ Qt-зависимостей,
     # быстрее импорт, чище окружение (по Gemini).
     "scenedetect>=0.6",

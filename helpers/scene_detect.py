@@ -49,8 +49,11 @@ def detect_shots_scenedetect(
 
     if downscale and downscale > 1:
         video = open_video(str(video_path))
-        video.set_downscale_factor(downscale)
         sm = SceneManager()
+        # Downscale живёт на SceneManager. У VideoStream метод set_downscale_factor
+        # убран в PySceneDetect 0.7 — прежний вызов падал с AttributeError.
+        sm.auto_downscale = False
+        sm.downscale = downscale
         sm.add_detector(
             ContentDetector(threshold=threshold, min_scene_len=int(min_scene_len_s * 30))
         )

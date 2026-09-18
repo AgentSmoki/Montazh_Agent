@@ -23,13 +23,16 @@ Forked from [browser-use/video-use](https://github.com/browser-use/video-use) an
 
 ## The 10 skills
 
-**5 bundled in this repo:**
+**7 bundled in this repo:**
 
 | Skill | What it adds |
 |---|---|
 | [`SKILL.md`](SKILL.md) | The editor itself: mode dispatch, 20 hard production rules, cut craft, per-mode pipelines |
 | [`skills/meme-inserter`](skills/meme-inserter/SKILL.md) | Memes and reaction images from KLIPY, emotion-first selection, script cues |
 | [`skills/emoji-accents`](skills/emoji-accents/SKILL.md) | Pop-in emoji overlays timed to spoken words |
+| [`skills/text-behind`](skills/text-behind/SKILL.md) | A word sitting behind the speaker via a person mask |
+| [`skills/reels-breakdown`](skills/reels-breakdown/SKILL.md) | Any reel → a «text \| shot» storyboard with retention metrics |
+| [`skills/reels-first-frame`](skills/reels-first-frame/SKILL.md) | First frame as a cover: literal shot + a headline that reads in a second |
 | [`skills/video-music`](skills/video-music/SKILL.md) | Background music generation + voice ducking |
 | [`skills/manim-video`](skills/manim-video/SKILL.md) | Math / diagram animations via Manim |
 

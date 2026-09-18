@@ -29,21 +29,24 @@ python helpers/music_gen.py duck <edit>/preview.mp4 <edit>/music_bed.mp3 \
 
 ## Провайдеры (порядок автопереключения)
 
-| Провайдер | Ключ (.env) | Особенность |
-|---|---|---|
-| **elevenlabs** (проще всего) | `ELEVENLABS_API_KEY` | REST `POST /v1/music`, отдаёт mp3 сразу, **без callback**. `force_instrumental:true` |
-| **sunoapi** (sunoapi.org) | `SUNOAPI_ORG_KEY` | **требует** `callBackUrl` (публичный URL) + polling по taskId. Локально неудобно |
-| **apiframe** (✅ работает) | `APIFRAME_KEY` | `POST https://api.apiframe.ai/v2/music/generate` (header `X-API-Key`, body `{prompt, model:"suno", sunoParams:{model_version:"V4_5PLUS", style}}`) → `{jobId, status:QUEUED}` (202, async). Poll `GET /v2/jobs/{jobId}` → `status COMPLETED` + `result.tracks[].audioUrl` (Suno даёт 2 трека, ~3 мин длина). Реализован в `music_gen.py:gen_apiframe` |
-| acedata | `ACEDATA_SUNO_KEY` | нужен баланс на acedata.cloud |
-| fal | `FAL_KEY` | fal.ai music-модели |
+Статус — на 2026-09-03, по реальным сессиям (Urist 07-2026, BMW 08-2026). Провайдер без ключа в `.env` пропускается.
 
-По умолчанию порядок `["elevenlabs", "sunoapi"]`. Добавить fal/apiframe/acedata — дописать функцию в `music_gen.py:PROVIDERS`.
+| Провайдер | Ключ (.env) | Статус и особенности |
+|---|---|---|
+| **sunoapi** (sunoapi.org) — основной | `SUNOAPI_ORG_KEY` + `SUNO_CALLBACK_URL` | ✅ **работает**. API формально требует `callBackUrl` — подходит любой публичный https-URL, результат забирается поллингом `record-info` по taskId (без реального вебхука). Cloudflare перед API режет дефолтный User-Agent (код 1010) — `music_gen.py` шлёт браузерный. Инструментал `V4_5`, трек ~2-4 мин → `bestwindow` |
+| elevenlabs | `ELEVENLABS_API_KEY` | REST `POST /v1/music`, mp3 сразу, без callback, `force_instrumental:true`. ⚠️ С 07-2026 отдаёт **403** — проверить тариф/ключ перед тем, как рассчитывать |
+| apiframe | `APIFRAME_KEY` | `POST https://api.apiframe.ai/v2/music/generate` (header `X-API-Key`, body `{prompt, model:"suno", sunoParams:{model_version:"V4_5PLUS", style}}`) → `{jobId}` (202), poll `GET /v2/jobs/{jobId}` → `result.tracks[].audioUrl`. Работал 06-2026, ⚠️ с 07-2026 **403** |
+| acedata | `ACEDATA_SUNO_KEY` | в `PROVIDERS` не реализован; на 07-2026 баланс 0 |
+| fal | `FAL_KEY` | в `PROVIDERS` не реализован; ключа нет |
+
+По умолчанию порядок `["sunoapi", "elevenlabs", "apiframe"]` (`music_gen.py:DEFAULT_ORDER`) — от проверенного к сомнительным. Добавить fal/acedata — дописать функцию в `music_gen.py:PROVIDERS` и имя ключа в `PROVIDER_KEYS`.
 
 ## Важно про права (ролики для клиентов!)
 
 - **Suno**: коммерческие права на треки — только на **платных** тарифах. Free-tier треки коммерчески использовать нельзя.
 - **ElevenLabs Music**: проверить тариф на коммерцию.
 - Это критично — Богдан делает ролики клиентам, не для себя.
+- **Альтернатива AI-музыке — записи CC0** (например, Musopen «The Complete Chopin Collection» на archive.org, лицензия CC0 1.0: коммерция, нарезка, без атрибуции). Важно: произведение может быть общественным достоянием, а конкретная **запись** — защищена правами исполнителя и издателя, и соцсети ловят её по Content ID. Отсеивать `by-nc-nd`. Окно трека под резы подбирать по динамике (см. сессию BMW), не только по громкости.
 
 ## Правила
 

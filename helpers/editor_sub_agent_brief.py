@@ -36,8 +36,10 @@ BRIEF_TEMPLATE = """# Editor Sub-Agent Brief
 
 ## Hard Rules (НЕ нарушать)
 
-1. **Никогда не резать внутри слова.** Каждый `range.start` ДОЛЖЕН совпадать с
-   `word.start` какого-то слова из transcripts/. `range.end` — с `word.end`.
+1. **Никогда не резать внутри слова.** `range.start` ставь на `word.start`, а
+   `range.end` — на `word.end` слова из transcripts/: это ориентир. Главный агент
+   потом переносит каждую границу в ближайшую тишину по звуку (Hard Rule 6 в
+   SKILL.md) — таймкоды ASR уезжают на 0,2–0,5 с.
 
 2. **🚫 НЕ резать внутри синтагмы** (источник: Gemini Deep Research, май 2026).
    Синтагма у носителя русского — неделимая интонационная единица. Запрещено:
@@ -61,10 +63,9 @@ BRIEF_TEMPLATE = """# Editor Sub-Agent Brief
 4. **Cross-clip контекст.** Когда выбираешь beats из разных файлов — убедись
    что слушатель понимает логику перехода. «А» → «Б» должно быть очевидным.
 
-5. **Padding учитывается автоматически.** Smart asymmetric padding по
-   последней фонеме будет добавлен `apply_padding.py --smart` после тебя —
-   НЕ закладывай padding сам в timestamps. Гласные +30мс, шипящие/-ть/-ся
-   +120мс, прочие согласные +50мс.
+5. **Точную границу ставит главный агент.** Timestamps оставляй ровно по словам:
+   рез в тишину по огибающей (или, если тишин нет, smart padding
+   `apply_padding.py --smart`) добавляется после тебя.
 
 6. **Длительность.** Целевая ~{target}с. Допуск ±20%. Если выходит больше —
    сократи менее ценные beats. Если меньше — добавь контекста.
@@ -164,7 +165,7 @@ def main() -> None:
     print(f"    prompt=open('{args.output}').read(),")
     print("    subagent_type='general-purpose'")
     print("  )")
-    print("Sub-agent вернёт EDL — сохрани в edit/edl.json, далее snap+pad+render.")
+    print("Sub-agent вернёт EDL — сохрани в edit/edl.json, далее границы в тишины по звуку (Hard Rule 6) и render --no-snap --no-pad.")
 
 
 if __name__ == "__main__":

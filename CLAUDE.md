@@ -8,7 +8,7 @@
 
 Выполни в порядке:
 
-1. **Прочитай `SKILL.md` целиком.** Это системный промпт агента — 17 hard rules, mode dispatch, pipeline'ы, anti-patterns. Без него ты не знаешь как работать.
+1. **Прочитай `SKILL.md` целиком.** Это системный промпт агента — 20 hard rules, mode dispatch, pipeline'ы, anti-patterns. Без него ты не знаешь как работать.
 
 2. **Определи ОС и проверь инструменты (env-doctor).** Запусти один раз за сессию:
    ```bash
@@ -124,15 +124,15 @@ LLM работает в основном на Layer 3-4 (читает packed.md,
 `platform_paths.py`. В helpers запрещены хардкод-пути вида `/System/Library/...`
 или `C:\Windows\...`.
 
-## 17 Hard Rules (повтор из SKILL.md)
+## 20 Hard Rules (повтор из SKILL.md — полные формулировки там)
 
 1. Субтитры — ПОСЛЕДНИМИ в filter-цепочке.
-2. Per-segment extract + lossless `-c copy` concat.
-3. 30ms аудио-fades на каждой границе.
+2. Per-segment extract + lossless `-c copy` concat. Сегменты `.mov` + PCM, длительность = целое число кадров (иначе AAC-priming и округление кадров дают дрейф звука/субтитров до 1 с к концу ролика).
+3. 30ms аудио-fades (`curve=hsin`) на каждой границе.
 4. Оверлеи через `setpts=PTS-STARTPTS+T/TB`.
 5. Master SRT с output-timeline offsets.
-6. Никогда не резать внутри слова.
-7. Padding 30-200ms на каждом cut-edge.
+6. Рез ставится в тишину по звуку (`silencedetect`), транскрипт — индекс слов и субтитров; такие EDL рендерятся с `--no-snap --no-pad`. Торцы HOOK/CTA/`_clean.mov` получают `transcript`-override.
+7. Запасной путь, когда чистых тишин нет, — snap к словам + smart padding по последней фонеме (30/50/120 мс). 7b — без резов внутри синтагмы. 7c — thought-guard: рез только на завершённой мысли.
 8. Word-level verbatim ASR только.
 9. Кеш транскриптов per-source.
 10. Parallel sub-agents для оверлеев.
@@ -143,6 +143,9 @@ LLM работает в основном на Layer 3-4 (читает packed.md,
 15. C2PA watermark при наличии generated-контента.
 16. OTIO + JSON-EDL — двойное сохранение state.
 17. Русский + диаризация по умолчанию.
+18. `beat_type` определяет тайминг: `talk` (аудио ведёт) / `screen_read` (dwell по чтению, `effect: pushin`, голос называет экран) / `stat`.
+19. Единый размер кадра для всех сегментов через cover-crop; кадр берётся из `EDL.resolution` (1080×1920, 1080×1350, 1080×1080).
+20. Кроссплатформенность через `platform_paths.py` — без хардкод-путей ОС.
 
 ## MCP-зависимости
 
@@ -159,11 +162,23 @@ LLM работает в основном на Layer 3-4 (читает packed.md,
 ## Мемы и музыка (skills проекта)
 
 - **`skills/meme-inserter/`** — вставка видео/картинок-мемов в кадр. В сценарии `[мем:🤯]` или `[мем: текст]`, или голосом «вставь мем про X». Источник KLIPY (`helpers/meme_fetch.py`, `helpers/parse_meme_cues.py`). Мем кладётся **по центру экрана** (не в угол). Кэш + manifest в `<edit>/memes/`.
-- **`skills/video-music/`** — фоновая музыка: генерация инструментала (`helpers/music_gen.py generate`) + ducking под голос (`music_gen.py duck`, sidechaincompress). Провайдеры: ElevenLabs Music (проще всего), Suno-gateways (sunoapi.org/acedata/apiframe), Fal.
+- **`skills/video-music/`** — фоновая музыка: генерация инструментала (`helpers/music_gen.py generate`) + ducking под голос (`music_gen.py duck`, sidechaincompress). Провайдеры в `music_gen.py:PROVIDERS`: sunoapi.org (проверенный рабочий путь: ключ + формальный `SUNO_CALLBACK_URL`, результат поллингом), ElevenLabs Music, apiframe. Актуальный статус ключей — в `skills/video-music/SKILL.md`. Для клиентских роликов альтернатива AI-музыке — записи CC0 (Musopen на archive.org), см. сессию BMW.
 - **`skills/emoji-accents/`** — эмодзи-акценты на словах-обозначениях («юрист» → ⚖, «внизу» → 👇): pop-in alpha-клипы через `helpers/emoji_overlay.py`, payoff-тайминг по word-timestamps. Шрифт — через `platform_paths.find_emoji_font()`.
+- **`skills/reels-breakdown/`** — разбор рилса (своего или чужого) в раскадровку «Текст | Кадр» с метриками удержания: длина хука, смены планов в минуту, где сказано без показа. Хелпер `helpers/reel_breakdown.py`, описания кадров — через `mcp__teletranscribe__describe_image_batch`.
+- **`skills/reels-first-frame/`** — первый кадр как обложка: кадр показывает тему буквально, поверх короткий заголовок; проверка читаемости и единства серии.
+- **`skills/reels-cover/`** — сгенерированная тематическая обложка ролика: `helpers/cover_gen.py` (polza.ai Media API, GPT Image 2.5 по умолчанию, ключ `POLZA_API_KEY` в `.env` или `~/.claude/env_secrets/polza.env`) + заголовок-хук поверх в safe-zone; стиль серии в `cover_gen.py:STYLES` и в профиле клиента; файлы `<edit>/covers/cover_NN_XXXX.png` + `.raw.png` + manifest.
+
+### Материалы рилс-методики
+`materials_private/` — чужие исходники (конспекты, раскадровки, чужие скиллы), на которые опираются рилс-скиллы. Папка закрыта от git: репозиторий публичный, чужой контент в него не идёт. В инструкции пишем своими словами со ссылкой на источник.
 
 ### ⚠️ API-ключи — ТОЛЬКО в `.env` (никогда в git-файлах)
-Ключи для KLIPY/Suno-gateways/ElevenLabs/Fal лежат в `.env` (он в `.gitignore`) + дубль в `~/.claude/env_secrets/montazh_agent.env`. **В CLAUDE.md/SKILL.md/EDL — только имена переменных**, не значения. `helpers/*` читают их из окружения/`.env` через `_load_env()`. Имена: `KLIPY_API_KEY`, `SUNOAPI_ORG_KEY`, `ACEDATA_SUNO_KEY`, `APIFRAME_KEY`, `ELEVENLABS_API_KEY`, `FAL_KEY`. Новый ключ — добавлять в `.env`, не в инструкции.
+Ключи для KLIPY/Suno-gateways/ElevenLabs/Fal лежат в `.env` (он в `.gitignore`) + дубль в `~/.claude/env_secrets/montazh_agent.env`. **В CLAUDE.md/SKILL.md/EDL — только имена переменных**, не значения. `helpers/*` читают их из окружения/`.env` через `_load_env()`. Имена: `KLIPY_API_KEY`, `SUNOAPI_ORG_KEY`, `SUNO_CALLBACK_URL`, `ACEDATA_SUNO_KEY`, `APIFRAME_KEY`, `ELEVENLABS_API_KEY`, `FAL_KEY`. Новый ключ — добавлять в `.env` и в `.env.example` (только имя), не в инструкции.
+
+## Профили стиля (per-client)
+
+Стиль монтажа конкретного человека живёт в `docs/style_profiles/<имя>.md` и **перекрывает дефолты SKILL.md** (стиль субтитров, шрифты, позиции, темп, наложения). Перед монтажом роликов клиента — прочитать его профиль; если профиля нет — собрать по первому ролику и согласовать.
+
+**NeuroBRO (Богдан)** — `docs/style_profiles/neurobro.md`. Ядро: субтитры естественными фразами, мелкий прямой гротеск без обводки, тёмным на белой футболке (или белым в свободной зоне у головы), одно слово во фразе акцентным цветом; хук-слова «за спиной» через `skills/text-behind/`; паузы ужимать, у каждого наложения вход/выход; мемы и врезки — из вариантов на выбор; без музыки; мат остаётся; CTA-карточка со словом только там, где он сам зовёт.
 
 ## Skills (используем глобальные)
 
@@ -245,7 +260,7 @@ Montazh_Agent/
 │   │   # — word-boundary / editable-transcript стек:
 │   ├── build_editable_transcript.py   # JSON → редактируемый markdown-транскрипт
 │   ├── parse_editable_transcript.py   # обратно: правки → EDL-cuts
-│   ├── snap_to_word.py            # привязка cut'ов к границам слов (Hard Rule #6)
+│   ├── snap_to_word.py            # привязка cut'ов к границам слов (запасной путь, Hard Rule #7)
 │   ├── apply_padding.py           # padding 30-200ms на cut-edge (Hard Rule #7)
 │   ├── check_thought_boundaries.py    # проверка цельности мысли на стыке
 │   ├── detect_audio_spikes.py    # детект аудио-всплесков для чистых cut'ов
@@ -267,7 +282,13 @@ Montazh_Agent/
 ├── skills/                        # под-скиллы проекта
 │   ├── manim-video/               # references для Manim (upstream)
 │   ├── meme-inserter/             # вставка мемов в кадр
+│   ├── emoji-accents/             # эмодзи-акценты на словах
+│   ├── text-behind/               # текст за спиной (маска MediaPipe)
+│   ├── reels-breakdown/           # разбор рилса в раскадровку + метрики
+│   ├── reels-first-frame/         # первый кадр-обложка с заголовком
+│   ├── reels-cover/               # сгенерированная обложка серии (polza.ai + хук)
 │   └── video-music/               # фоновая музыка + ducking
+├── materials_private/             # чужие исходники методик (вне git)
 ├── test_sessions/                 # тестовые монтажи (gitignored, кроме README+шаблона)
 ├── videos_dir/                    # личные монтажи пользователя (gitignored целиком)
 └── static/                        # banner + svg (upstream)
@@ -276,7 +297,7 @@ Montazh_Agent/
 ## Связь с другими проектами
 
 - **TeleTranscribe** (`~/Documents/Razarabotka/TeleTranscribe/`) — мой собственный ASR-стек. Транскрипция всех речевых треков идёт через его MCP (`mcp_server.py`). MCP уже отдаёт word-timestamps через `transcribe_file_json` / `transcribe_url_json` (патч задеплоен). `docs/PATCH_TT_DESCRIBE_IMAGE_PROMPT.md` — спека отдельного патча `describe_image` для vision-кадров.
-- **Dev_Architect** (`~/Documents/Razarabotka/Dev_Architect/`) — research tool (когда нужно сравнить новые модели). Сейчас сломан, см. memory `project_research_tool_outdated`.
+- **Dev_Architect** (`~/Documents/Razarabotka/Dev_Architect/`) — research tool (когда нужно сравнить новые модели или цены): CLI `research_tool/research.py "<задача> <технология> <год>?" --engine perplexity|gemini|deep` и глобальный MCP `research` (`mcp__research__web_research`, `mcp__research__quick_search`). Работает с 2026-06-28. Факты о моделях и ценах проверяй двумя источниками: Gemini отвечает без веба, Perplexity ходит в веб.
 - **Agent_Architect** (`~/Documents/Razarabotka/Agent_Architect/`) — образец структуры агента (CLAUDE.md + AGENTS.md symlink).
 - **`browser-use/video-use`** — upstream, от которого форкнулись. Обновления:
   - `git remote add upstream https://github.com/browser-use/video-use` (не сделано по умолчанию — отдельный repo)

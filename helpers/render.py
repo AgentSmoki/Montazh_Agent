@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import subprocess
@@ -134,6 +135,22 @@ TONEMAP_CHAIN = (
 )
 
 
+def parse_resolution(res_field: str | None) -> tuple[int, int] | None:
+    """EDL `resolution` ("1080x1350", "1080х1350" с русской «х») → (W, H).
+
+    None / мусор → None, и вызывающий падает на историческое поведение
+    (портрет 1080×1920 / ландшафт 1920×1080).
+    """
+    if not res_field:
+        return None
+    try:
+        w, h = (int(x) for x in str(res_field).lower().replace("х", "x").split("x")[:2])
+        return (w, h) if w > 0 and h > 0 else None
+    except Exception:
+        return None
+
+
+@functools.lru_cache(maxsize=None)  # один ffprobe на источник, а не на каждый сегмент
 def is_hdr_source(video: Path) -> bool:
     """Return True if the source uses a PQ or HLG transfer function."""
     try:
@@ -148,6 +165,7 @@ def is_hdr_source(video: Path) -> bool:
         return False
 
 
+@functools.lru_cache(maxsize=None)
 def is_portrait_source(video: Path) -> bool:
     """Return True if the video displays taller than wide (portrait / vertical).
 
@@ -188,20 +206,31 @@ FPS = 30  # вывод фиксирован 30fps — push-in считает к�
 def build_geometry_vf(
     portrait: bool, draft: bool, effect: str, duration: float,
     focus_x: float = 0.5, focus_y: float = 0.5,
+    target: tuple[int, int] | None = None,
 ) -> str:
     """Вернуть vf-цепочку геометрии: COVER-scale к точному кадру ИЛИ push-in.
 
-    ВАЖНО: все сегменты приводятся к ОДИНАКОВОМУ размеру (1080×1920 портрет /
-    1920×1080 ландшафт) через force_original_aspect_ratio=increase + crop.
+    ВАЖНО: все сегменты приводятся к ОДИНАКОВОМУ размеру через
+    force_original_aspect_ratio=increase + crop.
     Раньше было scale=-2:1920 → источники 1072×1920 и preprocessed 1080×1920
     давали РАЗНУЮ ширину, и lossless concat (-c copy) их склеивал криво.
     Cover-crop убирает этот латентный баг.
+
+    `target` — точный кадр из EDL.resolution (напр. 1080×1350 для 4:5
+    ленточного поста, 1080×1080 для квадрата). Задан → он и есть кадр для ВСЕХ
+    сегментов, независимо от ориентации конкретного источника (Hard Rule #19).
+    Не задан → историческое поведение: портрет 1080×1920, ландшафт 1920×1080.
 
     effect="pushin" — медленный Ken-Burns 1.0→1.12 (establish→деталь) для
     `screen_read`-битов: даёт глазу осесть и прочитать текст на экране,
     вместо резкого статичного зума. Пред-апскейл 2× убирает дрожание zoompan.
     """
-    if portrait:
+    if target:
+        W, H = target
+        if draft:
+            # draft = 2/3 кадра, чётные размеры (yuv420p требует even).
+            W, H = max(2, (W * 2 // 3) & ~1), max(2, (H * 2 // 3) & ~1)
+    elif portrait:
         W, H = (720, 1280) if draft else (1080, 1920)
     else:
         W, H = (1280, 720) if draft else (1920, 1080)
@@ -234,6 +263,9 @@ def extract_segment(
     effect: str = "",
     focus_x: float = 0.5,
     focus_y: float = 0.5,
+    target: tuple[int, int] | None = None,
+    extra_vf: str = "",
+    intermediate: bool = False,
 ) -> None:
     """Extract a cut range as its own MP4 with grade + 30ms audio fades baked in.
 
@@ -242,9 +274,15 @@ def extract_segment(
     `effect="pushin"` applies a slow Ken-Burns zoom for screen_read beats.
 
     Quality ladder:
-      - final (default): 1080p libx264 fast CRF 20
-      - preview:         1080p libx264 medium CRF 22 (evaluable for QC)
-      - draft:           720p libx264 ultrafast CRF 28 (cut-point check only)
+      - intermediate:    1080p libx264 ultrafast CRF 14 — сегмент потом перекодирует
+                         композит (есть оверлеи или субтитры), поэтому сжатие здесь
+                         тратит CPU впустую. Замер 2026-09-15 (i5-5257U, 10 с HEVC,
+                         SSIM против lossless): fast CRF20 52 с / 0,9922;
+                         medium CRF22 37 с / 0,9903; ultrafast CRF14 10 с / 0,9950 —
+                         быстрее и ближе к исходнику. Композит на такой базе тоже быстрее.
+      - final (default): 1080p libx264 fast CRF 20 — когда сегменты и есть финал
+      - preview:         1080p libx264 veryfast CRF 20 — когда превью без композита
+      - draft:           720p VideoToolbox (cut-point check only)
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -254,15 +292,27 @@ def extract_segment(
     if is_hdr_source(source):
         vf_parts.append(TONEMAP_CHAIN)
     vf_parts.append(build_geometry_vf(portrait, draft, effect, duration,
-                                      focus_x=focus_x, focus_y=focus_y))
+                                      focus_x=focus_x, focus_y=focus_y,
+                                      target=target))
     if grade_filter:
         vf_parts.append(grade_filter)
+    if extra_vf:
+        # per-range сырой фильтр из EDL (`"filter"`): затемнение хвоста,
+        # локальный кроп, вспышка — то, что нужно ОДНОМУ биту, а не всему EDL.
+        vf_parts.append(extra_vf)
     vf = ",".join(vf_parts)
+
+    # Длительность сегмента — целое число кадров (см. quantize_ranges_to_frames):
+    # видео режем ровно на n кадров, аудио — ровно на n/FPS секунд (apad+atrim).
+    # Иначе видео округляется вверх до кадра, а аудио нет, и после concat'а
+    # звук/картинка/субтитры расходятся на десятки мс с каждого стыка.
+    n_frames = max(1, int(round(duration * FPS)))
+    q_duration = n_frames / FPS
 
     # 30ms audio fades at both edges (Rule 3) — prevent pops.
     # curve=hsin (half-sine = hanning) сглаживает фазу лучше чем default tri.
     # По Gemini Deep Research: tri-curve оставляет click'и на zero-crossing.
-    fade_out_start = max(0.0, duration - 0.03)
+    fade_out_start = max(0.0, q_duration - 0.03)
     af = (f"afade=t=in:st=0:d=0.03:curve=hsin,"
           f"afade=t=out:st={fade_out_start:.3f}:d=0.03:curve=hsin")
 
@@ -276,26 +326,76 @@ def extract_segment(
             "-b:v", "10M",   # на Intel constant-quality не работает, используем CBR
             "-allow_sw", "1",  # fallback на soft если hw недоступен
         ]
+    elif intermediate:
+        # x264, а не VideoToolbox: тот же выигрыш по скорости, но работает на любой ОС (Rule 20)
+        codec_args = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "14"]
     elif preview:
-        codec_args = ["-c:v", "libx264", "-preset", "medium", "-crf", "22"]
+        codec_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
     else:
         codec_args = ["-c:v", "libx264", "-preset", "fast", "-crf", "20"]
 
+    # Аудио сегмента — PCM, не AAC: у каждого AAC-файла есть priming/padding
+    # (~1024+ сэмплов), которые concat-демуксер при `-c copy` оставляет в потоке —
+    # +20–35 мс звука на КАЖДЫЙ стык, к концу ролика 0.5–1 с рассинхрона.
+    # PCM склеивается сэмпл-в-сэмпл; в AAC кодируем один раз на композите.
     cmd = [
         "ffmpeg", "-y",
         "-ss", f"{seg_start:.3f}",
         "-i", str(source),
-        "-t", f"{duration:.3f}",
+        "-t", f"{q_duration + 0.05:.3f}",
         "-vf", vf,
-        "-af", af + ",aresample=async=1:first_pts=0",
+        "-af", af + f",aresample=async=1:first_pts=0,apad,atrim=0:{q_duration:.6f}",
         *codec_args,
         "-pix_fmt", "yuv420p", "-r", str(FPS), "-vsync", "cfr",
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-frames:v", str(n_frames),
+        "-c:a", "pcm_s16le", "-ar", "48000",
         "-video_track_timescale", str(FPS * 1000),
-        "-movflags", "+faststart",
         str(out_path),
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+
+def quantize_ranges_to_frames(edl: dict, fps: int = FPS) -> dict:
+    """Привести длительность каждого range к целому числу кадров (n/fps) и
+    пересчитать `start_in_output`/`duration` оверлеев на эту шкалу.
+
+    Зачем: экстракция всегда отдаёт целое число кадров, а офсеты субтитров
+    (build_master_srt) и оверлеев считались по «сырым» длительностям EDL —
+    набегало +0…33 мс на сегмент, к 30-му сегменту субтитры и карточки
+    опережали картинку на полсекунды. Правится в самом EDL до экстракции:
+    range.end := start + round(dur*fps)/fps, total_duration_s := сумма.
+    """
+    ranges = edl.get("ranges") or []
+    raw_cum = [0.0]
+    q_cum = [0.0]
+    for r in ranges:
+        start = float(r["start"])
+        dur = float(r["end"]) - start
+        n = max(1, int(round(dur * fps)))
+        q = n / fps
+        r["end"] = round(start + q, 6)
+        raw_cum.append(raw_cum[-1] + dur)
+        q_cum.append(q_cum[-1] + q)
+
+    def remap(t: float) -> float:
+        # «сырое» output-время (как считал автор EDL) → квантованная шкала рендера
+        k = len(raw_cum) - 2
+        for i in range(len(raw_cum) - 1):
+            if t < raw_cum[i + 1]:
+                k = i
+                break
+        return q_cum[k] + (t - raw_cum[k])
+
+    for o in edl.get("overlays") or []:
+        s = float(o["start_in_output"])
+        e = s + float(o["duration"])
+        s2, e2 = remap(s), remap(e)
+        o["start_in_output"] = round(s2, 3)
+        o["duration"] = round(max(1.0 / fps, e2 - s2), 3)
+    edl["total_duration_s"] = round(q_cum[-1], 3)
+    print(f"frame-quantize: {len(ranges)} range(s) → {q_cum[-1]:.3f}с "
+          f"(Δ {q_cum[-1] - raw_cum[-1]:+.3f}с к сырому EDL)")
+    return edl
 
 
 def extract_all_segments(
@@ -303,6 +403,7 @@ def extract_all_segments(
     edit_dir: Path,
     preview: bool,
     draft: bool = False,
+    intermediate: bool = False,
 ) -> list[Path]:
     """Extract every EDL range into edit_dir/clips_graded/seg_NN.mp4.
     Returns the ordered list of segment paths.
@@ -313,6 +414,7 @@ def extract_all_segments(
     """
     resolved = resolve_grade_filter(edl.get("grade"))
     is_auto = resolved == "__AUTO__"
+    target = parse_resolution(edl.get("resolution"))
     clips_dir = edit_dir / (
         "clips_draft" if draft else ("clips_preview" if preview else "clips_graded")
     )
@@ -331,7 +433,8 @@ def extract_all_segments(
         start = float(r["start"])
         end = float(r["end"])
         duration = end - start
-        out_path = clips_dir / f"seg_{i:02d}_{src_name}.mp4"
+        # .mov: контейнер для PCM-звука (mp4 pcm_s16le не принимает)
+        out_path = clips_dir / f"seg_{i:02d}_{src_name}.mov"
 
         if is_auto:
             seg_filter, _stats = auto_grade_for_clip(src_path, start=start, duration=duration, verbose=False)
@@ -348,7 +451,9 @@ def extract_all_segments(
         focus_y = float(r.get("focus_y", 0.5))
         extract_segment(src_path, start, duration, seg_filter, out_path,
                         preview=preview, draft=draft, effect=effect,
-                        focus_x=focus_x, focus_y=focus_y)
+                        focus_x=focus_x, focus_y=focus_y,
+                        target=target, extra_vf=str(r.get("filter") or ""),
+                        intermediate=intermediate)
         seg_paths.append(out_path)
 
     return seg_paths
@@ -368,7 +473,6 @@ def concat_segments(segment_paths: list[Path], out_path: Path, edit_dir: Path) -
         "-f", "concat", "-safe", "0",
         "-i", str(concat_list),
         "-c", "copy",
-        "-movflags", "+faststart",
         str(out_path),
     ]
     print(f"concat → {out_path.name}")
@@ -678,11 +782,22 @@ def build_final_composite(
     edit_dir: Path,
     canvas_w: int = 1080,
     canvas_h: int = 1920,
-    sub_style: str = SUB_FORCE_STYLE,
+    sub_style: str | None = SUB_FORCE_STYLE,
     bottom_scrim: bool = False,
     scrim_alpha: int = 190,
+    preview: bool = False,
+    max_duration: float | None = None,
 ) -> None:
     """Final pass: base → overlays (PTS-shifted) → subtitles LAST → out.
+
+    max_duration — длина ролика по EDL (total_duration_s): оверлей, чей конец вылезает за
+    последний кадр базы, иначе удлиняет композит (final_11_4513: +0,39 с тёмного хвоста
+    с эмодзи после затемнения). Режем выход `-t`.
+
+    preview=True → x264 veryfast CRF 20 вместо fast CRF 18: композит вдвое быстрее
+    (замер 2026-09-15: 20 с ролика — 28 с против 57 с), SSIM 0,991 к финальному.
+
+    sub_style=None → без force_style (стили берутся из самого .ass, см. ass_subs.py).
 
     Overlay-поля:
       - start_in_output, duration (обязательны)
@@ -702,8 +817,10 @@ def build_final_composite(
     has_subs = subtitles_path is not None and subtitles_path.exists()
 
     if not has_overlays and not has_subs:
-        # Nothing to do — just rename/copy base to final name
-        run(["ffmpeg", "-y", "-i", str(base_path), "-c", "copy", str(out_path)], quiet=True)
+        # Nothing to do — видео копией, звук PCM базы → AAC (mp4 PCM не принимает)
+        run(["ffmpeg", "-y", "-i", str(base_path), "-c:v", "copy",
+             "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+             "-movflags", "+faststart", str(out_path)], quiet=True)
         return
 
     inputs: list[str] = ["-i", str(base_path)]
@@ -743,6 +860,7 @@ def build_final_composite(
     POS_XY = {
         "center": "(W-w)/2:(H-h)/2",
         "lower": "(W-w)/2:H*0.60",
+        "chest": "(W-w)/2:H*0.75",   # под подбородком при крупном лице (Богдан: «мем ниже лица»)
         "topleft": "0:0",
     }
     current = "[0:v]"
@@ -770,11 +888,13 @@ def build_final_composite(
                          float(o["start_in_output"]) + float(o["duration"]))
                         for o in overlays if o.get("mute_subs")]
         srt_to_use = subtitles_path
-        if mute_windows:
+        # для .ass окна mute_subs уже вырезаны на этапе конверсии (ass_subs)
+        if mute_windows and srt_to_use.suffix.lower() == ".srt":
             srt_to_use = _strip_srt_windows(subtitles_path, mute_windows)
         subs_abs = str(srt_to_use.resolve()).replace(":", r"\:").replace("'", r"\'")
+        style_part = f":force_style='{sub_style}'" if sub_style else ""
         filter_parts.append(
-            f"{current}subtitles='{subs_abs}':force_style='{sub_style}'[outv]"
+            f"{current}subtitles='{subs_abs}'{style_part}[outv]"
         )
         out_label = "[outv]"
     else:
@@ -793,12 +913,15 @@ def build_final_composite(
         "-filter_complex", filter_complex,
         "-map", out_label,
         "-map", "0:a",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-c:v", "libx264", "-preset", "veryfast" if preview else "fast", "-crf", "20" if preview else "18",
         "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
+        # база несёт PCM (см. extract_segment) — единственное AAC-кодирование здесь
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-movflags", "+faststart",
-        str(out_path),
     ]
+    if max_duration:
+        cmd += ["-t", f"{float(max_duration):.3f}"]
+    cmd.append(str(out_path))
     print(f"compositing → {out_path.name}")
     print(f"  overlays: {len(overlays)}, subtitles: {'yes' if has_subs else 'no'}")
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -814,7 +937,7 @@ def main() -> None:
     ap.add_argument(
         "--preview",
         action="store_true",
-        help="Preview mode: 1080p, medium, CRF 22 — evaluable for QC, faster than final.",
+        help="Preview mode: 1080p, x264 veryfast CRF 20 — evaluable for QC, faster than final.",
     )
     ap.add_argument(
         "--draft",
@@ -966,18 +1089,28 @@ def main() -> None:
     else:
         print(f"warning: {transcripts_dir} не найден — skip word-boundary safety")
 
-    # 1. Extract per-segment (auto-grade per range if EDL grade is "auto")
+    # 0. Длительности range'ей → целое число кадров, оверлеи → на ту же шкалу.
+    # Делается ПОСЛЕ snap/padding (они двигают границы) и ДО экстракции.
+    edl = quantize_ranges_to_frames(edl)
+
+    # 1. Extract per-segment (auto-grade per range if EDL grade is "auto").
+    # Если дальше композит (оверлеи или субтитры) — он перекодирует базу, и сегменты
+    # пишем быстрым промежуточным кодированием. Без композита сегменты и есть финал.
+    will_composite = bool(edl.get("overlays")) or (not args.no_subtitles and (
+        args.build_subtitles
+        or bool(edl.get("subtitles") and resolve_path(edl["subtitles"], edit_dir).exists())))
     segment_paths = extract_all_segments(
-        edl, edit_dir, preview=args.preview, draft=args.draft
+        edl, edit_dir, preview=args.preview, draft=args.draft,
+        intermediate=will_composite,
     )
 
-    # 2. Concat → base
+    # 2. Concat → base (.mov: PCM-звук, сэмпл-точная склейка)
     if args.draft:
-        base_name = "base_draft.mp4"
+        base_name = "base_draft.mov"
     elif args.preview:
-        base_name = "base_preview.mp4"
+        base_name = "base_preview.mov"
     else:
-        base_name = "base.mp4"
+        base_name = "base.mov"
     base_path = edit_dir / base_name
     concat_segments(segment_paths, base_path, edit_dir)
 
@@ -1004,27 +1137,56 @@ def main() -> None:
     # 4. Composite (overlays + subtitles LAST) → intermediate (pre-loudnorm) path
     overlays = edl.get("overlays") or []
     # canvas из EDL.resolution ("1080x1920") — для центрирования/масштаба мемов
-    res = str(edl.get("resolution", "1080x1920")).lower().replace("х", "x")
-    try:
-        cw, ch = (int(x) for x in res.split("x")[:2])
-    except Exception:
-        cw, ch = 1080, 1920
+    cw, ch = parse_resolution(edl.get("resolution")) or (1080, 1920)
     # стиль субтитров можно переопределить per-EDL (другой бренд → другой шрифт),
     # не трогая глобальный SUB_FORCE_STYLE остальных проектов.
-    sub_style = edl.get("subtitle_style") or SUB_FORCE_STYLE
+    sub_style: str | None = edl.get("subtitle_style") or SUB_FORCE_STYLE
+    # Пресеты профиля стиля (docs/style_profiles): SRT → .ass с позиционированием
+    # по лицу (beside_head) или в правом нижнем углу (corner_dark). Стили живут
+    # в самом .ass, force_style не применяется. Окна mute_subs режем до конверсии.
+    preset = edl.get("subtitle_preset")
+    if subs_path is not None and preset:
+        try:
+            from ass_subs import build_subs  # type: ignore
+            mute_windows = [(float(o["start_in_output"]),
+                             float(o["start_in_output"]) + float(o["duration"]))
+                            for o in overlays if o.get("mute_subs")]
+            srt_for_ass = _strip_srt_windows(subs_path, mute_windows) if mute_windows else subs_path
+            ass_path = edit_dir / (subs_path.stem + ".ass")
+            print(f"\n=== Subtitles preset '{preset}' → {ass_path.name} ===")
+            # overlays с "subs_pos": "bottom"|"corner" — принудительная позиция субтитров
+            # в окне оверлея (напр. полнокадровая врезка: субтитры внизу карточки)
+            forced = [(float(o["start_in_output"]),
+                       float(o["start_in_output"]) + float(o["duration"]), str(o["subs_pos"]))
+                      for o in overlays if o.get("subs_pos")]
+            opts = dict(edl.get("subtitle_opts") or {})
+            if forced and preset == "beside_head":
+                opts["force_windows"] = forced
+            build_subs(base_path, srt_for_ass, ass_path, preset=preset, **opts)
+            subs_path = ass_path
+            sub_style = None
+        except ImportError as e:
+            print(f"warning: ass_subs недоступен ({e}) — остаёмся на SRT")
+        except Exception as e:
+            print(f"warning: пресет субтитров упал ({e}) — остаёмся на SRT")
     scrim = bool(edl.get("bottom_scrim"))
     scrim_alpha = int(edl.get("scrim_alpha", 190))
+    tmp_composite: Path | None = None
     if args.no_loudnorm:
         # Composite directly to final output
         build_final_composite(base_path, overlays, subs_path, out_path, edit_dir,
                               canvas_w=cw, canvas_h=ch, sub_style=sub_style,
-                              bottom_scrim=scrim, scrim_alpha=scrim_alpha)
+                              bottom_scrim=scrim, scrim_alpha=scrim_alpha,
+                              preview=args.preview or args.draft,
+                              max_duration=edl.get("total_duration_s"))
     else:
         # Composite to a temp file, then run loudnorm → final output
         tmp_composite = out_path.with_suffix(".prenorm.mp4")
         build_final_composite(base_path, overlays, subs_path, tmp_composite, edit_dir,
                               canvas_w=cw, canvas_h=ch, sub_style=sub_style,
-                              bottom_scrim=scrim, scrim_alpha=scrim_alpha)
+                              bottom_scrim=scrim, scrim_alpha=scrim_alpha,
+                              preview=args.preview or args.draft,
+                              max_duration=edl.get("total_duration_s"))
         print("loudness normalization → social-ready (-14 LUFS / -1 dBTP / LRA 11)")
         apply_loudnorm_two_pass(tmp_composite, out_path, preview=args.draft)
 
@@ -1046,6 +1208,9 @@ def main() -> None:
             print(f"warning: detect_audio_spikes недоступен ({e})")
         except Exception as e:
             print(f"warning: spike detection упало ({e})")
+
+    # prenorm-промежуток больше не нужен (при --no-loudnorm его и не было).
+    if tmp_composite is not None:
         tmp_composite.unlink(missing_ok=True)
 
     # === Post-render self-review (заимствовано из OpenMontage) ===
@@ -1053,12 +1218,9 @@ def main() -> None:
         try:
             import post_render_review as prr  # type: ignore
             expect = {"duration": float(edl["total_duration_s"])} if edl.get("total_duration_s") else {}
-            try:
-                cw2, ch2 = (int(x) for x in str(edl.get("resolution", "1080x1920"))
-                            .lower().replace("х", "x").split("x")[:2])
-                expect["res"] = (cw2, ch2)
-            except Exception:
-                pass
+            res_expect = parse_resolution(edl.get("resolution"))
+            if res_expect:
+                expect["res"] = res_expect
             print("\n=== Post-render review ===")
             report = prr.review(out_path, expect=expect or None)
             if report["ok"]:

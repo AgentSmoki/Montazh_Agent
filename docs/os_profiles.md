@@ -97,7 +97,7 @@ python helpers/env_doctor.py --json   # машинный JSON: {os, critical, fo
 
 ## Что НЕ зависит от ОС
 
-- Логика EDL, транскрипция (TeleTranscribe MCP по сети), все 17 hard rules,
+- Логика EDL, транскрипция (TeleTranscribe MCP по сети), все 20 hard rules,
   тайминги, padding, диаризация.
 - MCP B-roll генерация (Higgsfield/Fal по сети).
 - Структура `<videos_dir>/edit/`.

@@ -1,12 +1,14 @@
 """Генерация фоновой музыки под ролик + подмешивание с ducking под голос.
 
-Провайдеры (порядок автопереключения настраивается). Ключи — из .env/окружения,
-НИКОГДА не в коде:
-  - elevenlabs   ELEVENLABS_API_KEY   REST, отдаёт mp3 напрямую, без callback (проще всего)
-  - fal          FAL_KEY              fal.ai music-модели
-  - sunoapi      SUNOAPI_ORG_KEY      sunoapi.org — ТРЕБУЕТ публичный callBackUrl
-  - apiframe     APIFRAME_KEY         apiframe.ai (уточнить точный endpoint в их доке)
-  - acedata      ACEDATA_SUNO_KEY     acedata.cloud (нужен баланс на аккаунте)
+Провайдеры (порядок автопереключения — DEFAULT_ORDER, настраивается). Ключи —
+из .env/окружения, НИКОГДА не в коде. Провайдер без ключа пропускается.
+  - sunoapi      SUNOAPI_ORG_KEY + SUNO_CALLBACK_URL   sunoapi.org — проверенный
+                 рабочий путь (07-2026, 08-2026). callBackUrl нужен формально
+                 (любой публичный https-URL), результат забираем поллингом.
+  - elevenlabs   ELEVENLABS_API_KEY   REST, mp3 напрямую, без callback. С 07-2026 — 403.
+  - apiframe     APIFRAME_KEY         apiframe.ai Suno-шлюз. Работал 06-2026, с 07-2026 — 403.
+  Не реализованы (добавить в PROVIDERS при необходимости): fal (FAL_KEY),
+  acedata (ACEDATA_SUNO_KEY).
 
 ducking: музыка приглушается под речь через sidechaincompress (голос = ключ).
 Это правильный приём вместо статичного -25dB: музыка громкая в паузах,
@@ -93,9 +95,13 @@ def gen_sunoapi_org(prompt: str, duration_s: float, out_path: Path,
         "customMode": False, "instrumental": True,
         "prompt": prompt, "model": "V4_5", "callBackUrl": cb,
     }).encode()
+    # Cloudflare перед sunoapi.org отдаёт код 1010 на «неживой» User-Agent
+    # (поймано в сессии Urist 2026-07-03) — шлём браузерный.
+    ua = {"User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")}
     req = urllib.request.Request(
         "https://api.sunoapi.org/api/v1/generate", data=body, method="POST",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", **ua})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             resp = json.loads(r.read().decode())
@@ -107,7 +113,7 @@ def gen_sunoapi_org(prompt: str, duration_s: float, out_path: Path,
         poll = f"https://api.sunoapi.org/api/v1/generate/record-info?taskId={task_id}"
         for _ in range(40):
             time.sleep(6)
-            pr = urllib.request.Request(poll, headers={"Authorization": f"Bearer {key}"})
+            pr = urllib.request.Request(poll, headers={"Authorization": f"Bearer {key}", **ua})
             with urllib.request.urlopen(pr, timeout=30) as r:
                 pd = json.loads(r.read().decode())
             st = (pd.get("data") or {}).get("status")
@@ -199,20 +205,37 @@ def _dl(url: str, dest: Path) -> None:
 
 
 PROVIDERS = {
+    "sunoapi": gen_sunoapi_org,
     "elevenlabs": gen_elevenlabs,
     "apiframe": gen_apiframe,
-    "sunoapi": gen_sunoapi_org,
 }
-# fal/acedata — добавить при необходимости
+# Какой ключ нужен провайдеру — без него провайдер пропускается сразу,
+# вместо пустого сетевого запроса и невнятной ошибки.
+PROVIDER_KEYS = {
+    "sunoapi": "SUNOAPI_ORG_KEY",
+    "elevenlabs": "ELEVENLABS_API_KEY",
+    "apiframe": "APIFRAME_KEY",
+}
+# Порядок по умолчанию — от проверенного к сомнительным (состояние 2026-09):
+# sunoapi.org работает (сессии Urist 07-2026, BMW 08-2026); ElevenLabs и
+# apiframe с 07-2026 отдают 403. Порядок переопределяется --provider.
+DEFAULT_ORDER = ["sunoapi", "elevenlabs", "apiframe"]
+# fal/acedata — добавить при необходимости (функция в PROVIDERS + имя ключа в PROVIDER_KEYS)
 
 
 def generate(prompt: str, duration_s: float, out_path: Path,
              order: list[str] | None = None, **kw) -> bool:
     _load_env()
-    order = order or ["elevenlabs", "sunoapi"]
+    order = order or DEFAULT_ORDER
     for prov in order:
         fn = PROVIDERS.get(prov)
         if not fn:
+            print(f"music: неизвестный провайдер '{prov}' — доступны: "
+                  f"{', '.join(PROVIDERS)}", file=sys.stderr)
+            continue
+        key_name = PROVIDER_KEYS.get(prov)
+        if key_name and not os.environ.get(key_name):
+            print(f"music: '{prov}' пропущен — нет {key_name} в .env")
             continue
         print(f"music: пробую провайдер '{prov}'…")
         try:
@@ -222,8 +245,10 @@ def generate(prompt: str, duration_s: float, out_path: Path,
                 return True
         except Exception as e:  # noqa: BLE001
             print(f"{prov}: {e}", file=sys.stderr)
-    print("✗ ни один музыкальный провайдер не сработал — проверь ключи в .env "
-          "(ELEVENLABS_API_KEY проще всего: REST без callback)", file=sys.stderr)
+    print("✗ ни один музыкальный провайдер не сработал — проверь ключи в .env. "
+          "Проверенный путь: SUNOAPI_ORG_KEY + SUNO_CALLBACK_URL (любой публичный "
+          "https-URL, результат забирается поллингом). Код 1010 от sunoapi.org = "
+          "Cloudflare режет User-Agent.", file=sys.stderr)
     return False
 
 
